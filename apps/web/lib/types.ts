@@ -67,6 +67,29 @@ export interface QueryResult {
   truncated: boolean;
 }
 
+export interface CellUpdate {
+  schema: string;
+  table: string;
+  /** Tuples of [column_name, current_value] that identify the target row. */
+  pk: Array<[string, unknown]>;
+  set_column: string;
+  new_value: unknown;
+}
+
+export interface RowInsert {
+  schema: string;
+  table: string;
+  /** Tuples of [column_name, value]. Omit columns that should take their
+   *  default (auto-increment PK, NOW(), etc.). */
+  values: Array<[string, unknown]>;
+}
+
+export interface RowDelete {
+  schema: string;
+  table: string;
+  pk: Array<[string, unknown]>;
+}
+
 export interface CommandError {
   code: string;
   message: string;

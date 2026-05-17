@@ -1,6 +1,7 @@
 use dbstudio_core::{
     secrets::{self, Slot},
-    ssh_tunnel, ConnectionProfile, DatabaseEngine, DbError, QueryRequest, QueryResult, Schema,
+    ssh_tunnel, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, QueryRequest, QueryResult,
+    RowDelete, RowInsert, Schema,
 };
 use serde::Serialize;
 use tauri::State;
@@ -74,6 +75,61 @@ pub async fn run_query(
         .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
     let result = driver.execute(&profile, request).await?;
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn update_cell(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    update: CellUpdate,
+) -> CommandResult<u64> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let affected = driver.update_cell(&profile, update).await?;
+    Ok(affected)
+}
+
+#[tauri::command]
+pub async fn insert_row(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    request: RowInsert,
+) -> CommandResult<u64> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let affected = driver.insert_row(&profile, request).await?;
+    Ok(affected)
+}
+
+#[tauri::command]
+pub async fn delete_row(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    request: RowDelete,
+) -> CommandResult<u64> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let affected = driver.delete_row(&profile, request).await?;
+    Ok(affected)
+}
+
+/// Drop the cached pool (and SSH tunnel, if any) for a profile. The next
+/// query will reopen everything from scratch. Used by the UI's "Reconnect"
+/// button when a stale connection produces an EOF or the user wants a
+/// clean slate after a network change.
+#[tauri::command]
+pub async fn reconnect(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<()> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    driver.disconnect(&profile).await?;
+    Ok(())
 }
 
 // ---- secrets ---------------------------------------------------------------

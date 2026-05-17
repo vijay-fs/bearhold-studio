@@ -1,50 +1,216 @@
 'use client';
 
-import { use, useRef, useState } from 'react';
-import { Loader2, Play, AlertCircle } from 'lucide-react';
+import { use, useEffect, useRef, useState } from 'react';
+import {
+  Loader2,
+  Play,
+  AlertCircle,
+  Table2,
+  History,
+  Plus,
+  X,
+} from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { SqlEditor, type SqlEditorHandle } from '@/components/SqlEditor';
 import { ResultTable } from '@/components/ResultTable';
+import { QueryHistoryPanel } from '@/components/QueryHistoryPanel';
 import {
   ResizableHandle,
   ResizablePanel,
   ResizablePanelGroup,
 } from '@/components/ui/resizable';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { useConnections } from '@/store/connections';
+import { useQueryHistory } from '@/store/queryHistory';
+import { useSchemaCache } from '@/store/schemaCache';
+import { useSqlTabs } from '@/store/sqlTabs';
 import { api } from '@/lib/api';
 import { ENGINE_LABELS, type QueryResult } from '@/lib/types';
+import type { Schema } from '@dbstudio/erd';
+import { cn } from '@/lib/utils';
+import { detectEditableQuery } from '@/lib/detectEditableQuery';
 
 const STARTER_SQL = `-- Cmd/Ctrl + Enter to run
 SELECT now(), version();
 `;
 
+/** The schema/database an unqualified identifier resolves to. Autocomplete
+ *  uses this to decide whether to qualify a table reference in `insertText`,
+ *  so the user doesn't accept a suggestion that the server can't resolve. */
+function defaultSchemaFor(profile: { engine: string; database: string }): string {
+  if (profile.engine === 'mysql' || profile.engine === 'mariadb') return profile.database;
+  if (profile.engine === 'sqlite') return 'main';
+  return 'public';
+}
+
 type RunState =
   | { kind: 'idle' }
   | { kind: 'running' }
-  | { kind: 'ok'; result: QueryResult }
+  | { kind: 'ok'; result: QueryResult; sql: string }
   | { kind: 'error'; code: string; message: string };
 
 export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   const { id } = use(props.params);
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
-  const [sql, setSql] = useState(STARTER_SQL);
-  const [state, setState] = useState<RunState>({ kind: 'idle' });
   const editorRef = useRef<SqlEditorHandle>(null);
+  const recordHistory = useQueryHistory((s) => s.record);
+  const loadSchema = useSchemaCache((s) => s.load);
+  // Schema must be DERIVED from the cache selector — not copied into local
+  // useState. If Next.js soft-navigates between connections A → B, useState
+  // initializers don't re-run, so a stale A schema would be passed to B's
+  // editor and leak A's table names into B's autocomplete. The selector
+  // re-evaluates whenever the slot for this connection's id changes.
+  const schema = useSchemaCache((s) =>
+    profile ? (s.entries[profile.id]?.schema ?? null) : null,
+  );
+
+  // Tabs are a slice of the store keyed by this connection id. The store
+  // handles persistence; we just observe and call its actions.
+  const slot = useSqlTabs((s) => (profile ? s.byConnection[profile.id] : undefined));
+  const ensureTabs = useSqlTabs((s) => s.ensure);
+  const newTab = useSqlTabs((s) => s.newTab);
+  const closeTab = useSqlTabs((s) => s.closeTab);
+  const setActive = useSqlTabs((s) => s.setActive);
+  const setSql = useSqlTabs((s) => s.setSql);
+  const loadIntoNewTab = useSqlTabs((s) => s.loadIntoNewTab);
+
+  // Run state lives in-memory keyed by tab id so each tab keeps its own
+  // result + error panel. Switching tabs swaps the visible panel; reloading
+  // the page drops all run state (results don't persist — rerun is cheap).
+  const [runByTab, setRunByTab] = useState<Record<string, RunState>>({});
+  const [bottomTab, setBottomTab] = useState<'results' | 'history'>('results');
+
+  // First load for this connection: make sure there's at least one tab.
+  useEffect(() => {
+    if (!profile) return;
+    ensureTabs(profile.id, STARTER_SQL);
+  }, [profile?.id, ensureTabs]);
+
+  // Lazy schema fetch for autocomplete. The selector above subscribes to
+  // the cache, so a successful load triggers a re-render with the schema
+  // populated — no local state assignment needed. We intentionally key
+  // only on the connection id; `schema` and `loadSchema` are read inside
+  // the effect via closure (loadSchema is a stable Zustand action;
+  // schema is just a guard).
+  useEffect(() => {
+    if (!profile || schema) return;
+    void loadSchema(profile).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
+
+  // Command palette → open recent query in a NEW tab so we don't clobber
+  // the current one. The CommandPalette dispatches `palette-load-sql`
+  // after navigating us here; we also drain any pending sessionStorage
+  // stash (handles the race where the event fires before mount).
+  useEffect(() => {
+    if (!profile) return;
+    const onPaletteLoad = (e: Event) => {
+      const detail = (e as CustomEvent<{ sql: string }>).detail;
+      if (detail?.sql) {
+        loadIntoNewTab(profile.id, detail.sql);
+        setBottomTab('results');
+      }
+    };
+    window.addEventListener('palette-load-sql', onPaletteLoad as EventListener);
+    const pending = sessionStorage.getItem('dbstudio.pendingSql');
+    if (pending) {
+      loadIntoNewTab(profile.id, pending);
+      sessionStorage.removeItem('dbstudio.pendingSql');
+      sessionStorage.removeItem('dbstudio.pendingSqlEntry');
+    }
+    return () =>
+      window.removeEventListener('palette-load-sql', onPaletteLoad as EventListener);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
+
+  // Keyboard shortcuts: Cmd+T new, Cmd+W close, Cmd+1..9 switch.
+  useEffect(() => {
+    if (!profile) return;
+    const onKey = (e: KeyboardEvent) => {
+      const cmd = e.metaKey || e.ctrlKey;
+      if (!cmd) return;
+      const key = e.key.toLowerCase();
+      if (key === 't') {
+        e.preventDefault();
+        newTab(profile.id, '');
+        return;
+      }
+      if (key === 'w') {
+        e.preventDefault();
+        const tabs = useSqlTabs.getState().byConnection[profile.id];
+        if (tabs?.activeId) closeTab(profile.id, tabs.activeId);
+        return;
+      }
+      if (/^[1-9]$/.test(key)) {
+        const idx = Number(key) - 1;
+        const tabs = useSqlTabs.getState().byConnection[profile.id]?.tabs;
+        const target = tabs?.[idx];
+        if (target) {
+          e.preventDefault();
+          setActive(profile.id, target.id);
+        }
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.id]);
+
+  // ---- derived state ----------------------------------------------------
+
+  const activeTab = slot?.tabs.find((t) => t.id === slot.activeId) ?? slot?.tabs[0] ?? null;
+  const state: RunState = activeTab ? (runByTab[activeTab.id] ?? { kind: 'idle' }) : { kind: 'idle' };
+
+  // Light up editing on the result grid when the user's SQL was a plain
+  // `SELECT * FROM <known_table>` — joins, projections, and CTEs stay
+  // read-only because we can't safely map cells back to a single row.
+  const editable = (() => {
+    if (state.kind !== 'ok' || !schema || !profile) return undefined;
+    return (
+      detectEditableQuery(state.sql, schema, profile, () => {
+        // Re-run the same SQL after an insert / delete so the grid reflects
+        // what's actually in the DB (esp. auto-generated PKs after INSERT).
+        void onRun(state.sql);
+      }) ?? undefined
+    );
+  })();
+
+  // ---- run --------------------------------------------------------------
 
   const onRun = async (sqlToRun: string) => {
-    if (!profile) return;
-    setState({ kind: 'running' });
+    if (!profile || !activeTab) return;
+    const tabId = activeTab.id;
+    setRunByTab((m) => ({ ...m, [tabId]: { kind: 'running' } }));
+    setBottomTab('results');
+    const startedAt = performance.now();
     try {
       const result = await api.runQuery(profile, { sql: sqlToRun });
-      setState({ kind: 'ok', result });
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      setRunByTab((m) => ({ ...m, [tabId]: { kind: 'ok', result, sql: sqlToRun } }));
+      recordHistory({
+        connectionId: profile.id,
+        sql: sqlToRun,
+        elapsedMs: result.elapsed_ms || elapsedMs,
+        status: 'ok',
+        rowsReturned: result.rows.length,
+        rowsAffected: result.rows_affected ?? undefined,
+        truncated: result.truncated,
+      });
     } catch (e: unknown) {
       const err = e as { code?: string; message?: string };
-      setState({
-        kind: 'error',
-        code: err.code ?? 'unknown',
-        message: err.message ?? String(e),
+      const elapsedMs = Math.round(performance.now() - startedAt);
+      const code = err.code ?? 'unknown';
+      const message = err.message ?? String(e);
+      setRunByTab((m) => ({ ...m, [tabId]: { kind: 'error', code, message } }));
+      recordHistory({
+        connectionId: profile.id,
+        sql: sqlToRun,
+        elapsedMs,
+        status: 'error',
+        errorCode: code,
+        errorMessage: message,
       });
     }
   };
@@ -63,10 +229,12 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
     <AppShell>
       <div className="flex h-full flex-col">
         <header className="flex items-center justify-between border-b px-5 py-2.5">
-          <div>
-            <h1 className="text-sm font-semibold">{profile.name}</h1>
+          <div className="min-w-0">
+            <h1 className="text-sm font-semibold truncate">{profile.name}</h1>
             <p className="text-[11px] text-muted-foreground">
-              {ENGINE_LABELS[profile.engine]} · SQL workspace
+              {ENGINE_LABELS[profile.engine]} · SQL workspace ·{' '}
+              <kbd className="rounded border px-1 text-[10px]">Cmd</kbd>+
+              <kbd className="rounded border px-1 text-[10px]">T</kbd> new tab
             </p>
           </div>
           <Button
@@ -83,6 +251,17 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
           </Button>
         </header>
 
+        <TabBar
+          tabs={slot?.tabs ?? []}
+          activeId={slot?.activeId ?? null}
+          onSelect={(tid) => setActive(profile.id, tid)}
+          onClose={(tid) => {
+            closeTab(profile.id, tid);
+            setRunByTab(({ [tid]: _, ...rest }) => rest);
+          }}
+          onNew={() => newTab(profile.id, '')}
+        />
+
         <ResizablePanelGroup
           direction="vertical"
           autoSaveId="dbstudio.sql-split"
@@ -90,39 +269,158 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
         >
           <ResizablePanel defaultSize={55} minSize={15}>
             <div className="h-full overflow-hidden">
-              <SqlEditor ref={editorRef} value={sql} onChange={setSql} onRun={onRun} />
+              <SqlEditor
+                ref={editorRef}
+                // The key forces Monaco to reset its internal model when the
+                // active tab changes — otherwise undo history bleeds across
+                // tabs, and the cursor jumps to wherever it was in the
+                // previous tab's content of the same length.
+                key={activeTab?.id ?? 'empty'}
+                value={activeTab?.sql ?? ''}
+                onChange={(next) => {
+                  if (activeTab) setSql(profile.id, activeTab.id, next);
+                }}
+                onRun={onRun}
+                schema={schema}
+                engine={profile.engine}
+                defaultSchema={defaultSchemaFor(profile)}
+              />
             </div>
           </ResizablePanel>
           <ResizableHandle />
           <ResizablePanel defaultSize={45} minSize={15}>
-            <div className="h-full overflow-hidden">
-              {state.kind === 'idle' && (
-                <p className="p-4 text-xs text-muted-foreground">
-                  Run a query to see results here.
-                </p>
-              )}
-              {state.kind === 'running' && (
-                <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-                  <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
-                  Running...
-                </div>
-              )}
-              {state.kind === 'error' && (
-                <div className="p-5">
-                  <div className="flex items-center gap-2 text-destructive">
-                    <AlertCircle className="h-4 w-4" />
-                    <span className="text-sm font-semibold">Query failed</span>
-                  </div>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    <span className="font-mono">{state.code}</span> · {state.message}
+            <Tabs
+              value={bottomTab}
+              onValueChange={(v) => setBottomTab(v as 'results' | 'history')}
+              className="flex h-full flex-col"
+            >
+              <TabsList className="m-2 mb-0 h-8 self-start">
+                <TabsTrigger value="results" className="gap-1.5">
+                  <Table2 className="h-3 w-3" />
+                  Results
+                </TabsTrigger>
+                <TabsTrigger value="history" className="gap-1.5">
+                  <History className="h-3 w-3" />
+                  History
+                </TabsTrigger>
+              </TabsList>
+              <TabsContent value="results" className="mt-0 flex-1 overflow-hidden">
+                {state.kind === 'idle' && (
+                  <p className="p-4 text-xs text-muted-foreground">
+                    Run a query to see results here.
                   </p>
-                </div>
-              )}
-              {state.kind === 'ok' && <ResultTable result={state.result} />}
-            </div>
+                )}
+                {state.kind === 'running' && (
+                  <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                    <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                    Running...
+                  </div>
+                )}
+                {state.kind === 'error' && (
+                  <div className="p-5">
+                    <div className="flex items-center gap-2 text-destructive">
+                      <AlertCircle className="h-4 w-4" />
+                      <span className="text-sm font-semibold">Query failed</span>
+                    </div>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      <span className="font-mono">{state.code}</span> · {state.message}
+                    </p>
+                  </div>
+                )}
+                {state.kind === 'ok' && (
+                  <ResultTable result={state.result} editable={editable} />
+                )}
+              </TabsContent>
+              <TabsContent value="history" className="mt-0 flex-1 overflow-hidden">
+                <QueryHistoryPanel
+                  connectionId={profile.id}
+                  onLoad={(s) => {
+                    loadIntoNewTab(profile.id, s);
+                    setBottomTab('results');
+                  }}
+                  onRerun={(s) => {
+                    const tab = loadIntoNewTab(profile.id, s);
+                    setBottomTab('results');
+                    // Defer the run so the new tab is the active one when
+                    // onRun reads `activeTab`.
+                    setTimeout(() => void onRun(s), 0);
+                    void tab;
+                  }}
+                />
+              </TabsContent>
+            </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
     </AppShell>
+  );
+}
+
+function TabBar({
+  tabs,
+  activeId,
+  onSelect,
+  onClose,
+  onNew,
+}: {
+  tabs: { id: string; title: string }[];
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onClose: (id: string) => void;
+  onNew: () => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-0.5 border-b bg-muted/30 px-2">
+      <div className="flex flex-1 overflow-x-auto">
+        {tabs.map((tab, i) => {
+          const active = tab.id === activeId;
+          return (
+            <div
+              key={tab.id}
+              className={cn(
+                'group flex shrink-0 cursor-pointer items-center gap-1.5 border-r px-3 py-1.5 text-xs',
+                active
+                  ? 'bg-background text-foreground'
+                  : 'text-muted-foreground hover:bg-accent/40 hover:text-foreground',
+              )}
+              onClick={() => onSelect(tab.id)}
+              onAuxClick={(e) => {
+                // Middle-click closes — common terminal-emulator convention.
+                if (e.button === 1) {
+                  e.preventDefault();
+                  onClose(tab.id);
+                }
+              }}
+              title={`${tab.title}\nCmd+${i + 1} to switch`}
+            >
+              <span className="max-w-[180px] truncate">{tab.title || 'Untitled'}</span>
+              <button
+                type="button"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onClose(tab.id);
+                }}
+                className={cn(
+                  'rounded p-0.5 opacity-0 transition-opacity hover:bg-background hover:text-destructive',
+                  active && 'opacity-60',
+                  'group-hover:opacity-100',
+                )}
+                aria-label={`Close ${tab.title}`}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      <button
+        type="button"
+        onClick={onNew}
+        className="ml-1 shrink-0 rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+        title="New tab (Cmd+T)"
+      >
+        <Plus className="h-3.5 w-3.5" />
+      </button>
+    </div>
   );
 }

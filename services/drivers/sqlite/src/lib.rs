@@ -10,11 +10,12 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use dbstudio_core::{
-    ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, ResultColumn, Result, Schema,
+    CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, ResultColumn,
+    Result, RowDelete, RowInsert, Schema, Value,
 };
 use sqlx::{
-    sqlite::{SqlitePool, SqlitePoolOptions},
-    Column, Row, TypeInfo,
+    sqlite::{Sqlite, SqlitePool, SqlitePoolOptions},
+    Column, QueryBuilder, Row, TypeInfo,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -152,11 +153,140 @@ impl Driver for SqliteDriver {
         introspect::load_schema(&pool).await
     }
 
+    async fn update_cell(
+        &self,
+        profile: &ConnectionProfile,
+        update: CellUpdate,
+    ) -> Result<u64> {
+        if update.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "update_cell requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        // SQLite ignores the schema parameter — there's only the `main`
+        // database (attached databases are out of scope here).
+        let mut q: QueryBuilder<Sqlite> = QueryBuilder::new("UPDATE ");
+        q.push(sqlite_ident(&update.table));
+        q.push(" SET ");
+        q.push(sqlite_ident(&update.set_column));
+        q.push(" = ");
+        push_sqlite_value(&mut q, &update.new_value);
+
+        q.push(" WHERE ");
+        for (i, (col, val)) in update.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(sqlite_ident(col));
+            q.push(" = ");
+            push_sqlite_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn insert_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowInsert,
+    ) -> Result<u64> {
+        if req.values.is_empty() {
+            return Err(DbError::InvalidInput(
+                "insert_row requires at least one column value".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<Sqlite> = QueryBuilder::new("INSERT INTO ");
+        q.push(sqlite_ident(&req.table));
+
+        q.push(" (");
+        for (i, (col, _)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            q.push(sqlite_ident(col));
+        }
+        q.push(") VALUES (");
+        for (i, (_, val)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            push_sqlite_value(&mut q, val);
+        }
+        q.push(")");
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowDelete,
+    ) -> Result<u64> {
+        if req.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "delete_row requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<Sqlite> = QueryBuilder::new("DELETE FROM ");
+        q.push(sqlite_ident(&req.table));
+        q.push(" WHERE ");
+        for (i, (col, val)) in req.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(sqlite_ident(col));
+            q.push(" = ");
+            push_sqlite_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
     async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()> {
         if let Some((_, pool)) = self.pools.remove(&profile.id) {
             pool.close().await;
         }
         Ok(())
+    }
+}
+
+/// Quote a SQLite identifier with double-quotes. Doubles any embedded `"`.
+fn sqlite_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+fn push_sqlite_value(q: &mut QueryBuilder<'_, Sqlite>, v: &Value) {
+    match v {
+        Value::Null => {
+            q.push("NULL");
+        }
+        Value::Bool(b) => {
+            q.push_bind(*b);
+        }
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                q.push_bind(i);
+            } else if let Some(f) = n.as_f64() {
+                q.push_bind(f);
+            } else {
+                q.push_bind(n.to_string());
+            }
+        }
+        Value::String(s) => {
+            q.push_bind(s.clone());
+        }
+        Value::Array(_) | Value::Object(_) => {
+            q.push_bind(v.to_string());
+        }
     }
 }
 

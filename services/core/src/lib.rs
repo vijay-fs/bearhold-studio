@@ -17,7 +17,7 @@ pub use connection::{
 };
 pub use driver::Driver;
 pub use error::{DbError, Result};
-pub use query::{QueryRequest, QueryResult, ResultColumn, Value};
+pub use query::{CellUpdate, QueryRequest, QueryResult, ResultColumn, RowDelete, RowInsert, Value};
 pub use schema::{
     Column, ForeignKey, Index, NamedSchema, PrimaryKey, RefAction, Schema, Table, View,
 };

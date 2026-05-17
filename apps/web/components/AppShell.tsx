@@ -25,6 +25,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { CommandPalette } from '@/components/CommandPalette';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const profiles = useConnections((s) => s.profiles);
@@ -174,6 +175,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      <CommandPalette />
     </div>
   );
 }

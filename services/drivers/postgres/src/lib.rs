@@ -13,12 +13,12 @@ use dashmap::DashMap;
 use dbstudio_core::{
     secrets::{self, Slot},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
-    AuthMethod, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, ResultColumn,
-    Result, Schema, SshAuth,
+    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult,
+    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
 };
 use sqlx::{
-    postgres::{PgPool, PgPoolOptions},
-    Column, Row, TypeInfo,
+    postgres::{PgPool, PgPoolOptions, Postgres},
+    Column, QueryBuilder, Row, TypeInfo,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -58,6 +58,16 @@ impl PostgresDriver {
         let pool = PgPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(std::time::Duration::from_secs(10))
+            // Validate the connection before handing it out. Catches the
+            // common case where an SSH tunnel died or the server killed an
+            // idle session — sqlx drops the dead handle and opens a fresh
+            // one instead of surfacing `io error: ... got 0 bytes at EOF`.
+            .test_before_acquire(true)
+            // Recycle connections that have been idle long enough that the
+            // bastion is likely to have closed the channel. Keeps the pool
+            // warm but bounded — combined with `test_before_acquire` this
+            // covers both "stale on read" and "killed mid-idle".
+            .idle_timeout(Some(std::time::Duration::from_secs(300)))
             .connect(&url)
             .await
             .map_err(map_sqlx_error)?;
@@ -223,6 +233,48 @@ async fn build_connection_url(
     Ok(url.into())
 }
 
+/// Quote a Postgres identifier. Doubles any embedded `"` and wraps the
+/// whole thing — handles names with spaces, reserved words, mixed case.
+fn pg_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+/// Push a JSON value as a bound parameter to the query builder. Null becomes
+/// a literal `NULL` (sqlx can't bind a typeless null); everything else is
+/// bound by its native Rust type so Postgres handles coercion to the column
+/// type from a typed value (Integer → INT, String → TEXT/VARCHAR, etc).
+fn push_pg_value(q: &mut QueryBuilder<'_, Postgres>, v: &Value) {
+    match v {
+        Value::Null => {
+            q.push("NULL");
+        }
+        Value::Bool(b) => {
+            q.push_bind(*b);
+        }
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                q.push_bind(i);
+            } else if let Some(f) = n.as_f64() {
+                q.push_bind(f);
+            } else {
+                // Out-of-range numerics: send the textual form. Postgres
+                // accepts text for NUMERIC and will reject for int columns,
+                // which is the right behaviour — surface a coercion error
+                // to the user rather than silently truncating.
+                q.push_bind(n.to_string());
+            }
+        }
+        Value::String(s) => {
+            q.push_bind(s.clone());
+        }
+        Value::Array(_) | Value::Object(_) => {
+            // JSON/JSONB columns: bind the value's serialized form. Postgres
+            // accepts a JSON string and the column type drives the parse.
+            q.push_bind(v.to_string());
+        }
+    }
+}
+
 /// Cheap heuristic: does this SQL produce a result set?
 ///
 /// Skips leading whitespace and SQL comments (`-- line` and `/* block */`)
@@ -342,6 +394,108 @@ impl Driver for PostgresDriver {
     async fn schema(&self, profile: &ConnectionProfile) -> Result<Schema> {
         let pool = self.pool_for(profile).await?;
         introspect::load_schema(&pool).await
+    }
+
+    async fn update_cell(
+        &self,
+        profile: &ConnectionProfile,
+        update: CellUpdate,
+    ) -> Result<u64> {
+        if update.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "update_cell requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<Postgres> = QueryBuilder::new("UPDATE ");
+        q.push(pg_ident(&update.schema));
+        q.push(".");
+        q.push(pg_ident(&update.table));
+        q.push(" SET ");
+        q.push(pg_ident(&update.set_column));
+        q.push(" = ");
+        push_pg_value(&mut q, &update.new_value);
+
+        q.push(" WHERE ");
+        for (i, (col, val)) in update.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(pg_ident(col));
+            q.push(" = ");
+            push_pg_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn insert_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowInsert,
+    ) -> Result<u64> {
+        if req.values.is_empty() {
+            return Err(DbError::InvalidInput(
+                "insert_row requires at least one column value".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<Postgres> = QueryBuilder::new("INSERT INTO ");
+        q.push(pg_ident(&req.schema));
+        q.push(".");
+        q.push(pg_ident(&req.table));
+
+        q.push(" (");
+        for (i, (col, _)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            q.push(pg_ident(col));
+        }
+        q.push(") VALUES (");
+        for (i, (_, val)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            push_pg_value(&mut q, val);
+        }
+        q.push(")");
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowDelete,
+    ) -> Result<u64> {
+        if req.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "delete_row requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<Postgres> = QueryBuilder::new("DELETE FROM ");
+        q.push(pg_ident(&req.schema));
+        q.push(".");
+        q.push(pg_ident(&req.table));
+        q.push(" WHERE ");
+        for (i, (col, val)) in req.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(pg_ident(col));
+            q.push(" = ");
+            push_pg_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
     }
 
     async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()> {

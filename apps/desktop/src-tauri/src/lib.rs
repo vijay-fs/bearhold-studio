@@ -43,6 +43,10 @@ pub fn run() {
             commands::delete_secret,
             commands::delete_secrets,
             commands::discover_host_key,
+            commands::update_cell,
+            commands::insert_row,
+            commands::delete_row,
+            commands::reconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dbstudio");

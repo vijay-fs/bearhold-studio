@@ -13,12 +13,12 @@ use dashmap::DashMap;
 use dbstudio_core::{
     secrets::{self, Slot},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
-    AuthMethod, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, ResultColumn,
-    Result, Schema, SshAuth,
+    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult,
+    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
 };
 use sqlx::{
-    mysql::{MySqlPool, MySqlPoolOptions},
-    Column, Row, TypeInfo,
+    mysql::{MySql, MySqlPool, MySqlPoolOptions},
+    Column, QueryBuilder, Row, TypeInfo,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -56,6 +56,9 @@ impl MySqlDriver {
         let pool = MySqlPoolOptions::new()
             .max_connections(5)
             .acquire_timeout(std::time::Duration::from_secs(10))
+            // See the matching note in the Postgres driver.
+            .test_before_acquire(true)
+            .idle_timeout(Some(std::time::Duration::from_secs(300)))
             .connect(&url)
             .await
             .map_err(map_sqlx_error)?;
@@ -163,6 +166,38 @@ async fn build_connection_url(
     Ok(url.into())
 }
 
+/// Quote a MySQL identifier with backticks. Doubles any embedded backtick.
+fn mysql_ident(name: &str) -> String {
+    format!("`{}`", name.replace('`', "``"))
+}
+
+/// Bind a JSON value as a MySQL parameter.
+fn push_mysql_value(q: &mut QueryBuilder<'_, MySql>, v: &Value) {
+    match v {
+        Value::Null => {
+            q.push("NULL");
+        }
+        Value::Bool(b) => {
+            q.push_bind(*b);
+        }
+        Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                q.push_bind(i);
+            } else if let Some(f) = n.as_f64() {
+                q.push_bind(f);
+            } else {
+                q.push_bind(n.to_string());
+            }
+        }
+        Value::String(s) => {
+            q.push_bind(s.clone());
+        }
+        Value::Array(_) | Value::Object(_) => {
+            q.push_bind(v.to_string());
+        }
+    }
+}
+
 /// Same heuristic as the Postgres driver — see notes in that crate.
 fn is_query_statement(sql: &str) -> bool {
     matches!(
@@ -252,6 +287,116 @@ impl Driver for MySqlDriver {
     async fn schema(&self, profile: &ConnectionProfile) -> Result<Schema> {
         let pool = self.pool_for(profile).await?;
         introspect::load_schema(&pool, &profile.database).await
+    }
+
+    async fn update_cell(
+        &self,
+        profile: &ConnectionProfile,
+        update: CellUpdate,
+    ) -> Result<u64> {
+        if update.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "update_cell requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<MySql> = QueryBuilder::new("UPDATE ");
+        // MySQL "schema" == database name. If it matches the connection's
+        // active database, we can omit it; otherwise qualify the table.
+        if !update.schema.is_empty() && update.schema != profile.database {
+            q.push(mysql_ident(&update.schema));
+            q.push(".");
+        }
+        q.push(mysql_ident(&update.table));
+        q.push(" SET ");
+        q.push(mysql_ident(&update.set_column));
+        q.push(" = ");
+        push_mysql_value(&mut q, &update.new_value);
+
+        q.push(" WHERE ");
+        for (i, (col, val)) in update.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(mysql_ident(col));
+            q.push(" = ");
+            push_mysql_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn insert_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowInsert,
+    ) -> Result<u64> {
+        if req.values.is_empty() {
+            return Err(DbError::InvalidInput(
+                "insert_row requires at least one column value".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<MySql> = QueryBuilder::new("INSERT INTO ");
+        if !req.schema.is_empty() && req.schema != profile.database {
+            q.push(mysql_ident(&req.schema));
+            q.push(".");
+        }
+        q.push(mysql_ident(&req.table));
+
+        q.push(" (");
+        for (i, (col, _)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            q.push(mysql_ident(col));
+        }
+        q.push(") VALUES (");
+        for (i, (_, val)) in req.values.iter().enumerate() {
+            if i > 0 {
+                q.push(", ");
+            }
+            push_mysql_value(&mut q, val);
+        }
+        q.push(")");
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
+    }
+
+    async fn delete_row(
+        &self,
+        profile: &ConnectionProfile,
+        req: RowDelete,
+    ) -> Result<u64> {
+        if req.pk.is_empty() {
+            return Err(DbError::InvalidInput(
+                "delete_row requires at least one pk column".into(),
+            ));
+        }
+        let pool = self.pool_for(profile).await?;
+
+        let mut q: QueryBuilder<MySql> = QueryBuilder::new("DELETE FROM ");
+        if !req.schema.is_empty() && req.schema != profile.database {
+            q.push(mysql_ident(&req.schema));
+            q.push(".");
+        }
+        q.push(mysql_ident(&req.table));
+        q.push(" WHERE ");
+        for (i, (col, val)) in req.pk.iter().enumerate() {
+            if i > 0 {
+                q.push(" AND ");
+            }
+            q.push(mysql_ident(col));
+            q.push(" = ");
+            push_mysql_value(&mut q, val);
+        }
+
+        let result = q.build().execute(&pool).await.map_err(map_sqlx_error)?;
+        Ok(result.rows_affected())
     }
 
     async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()> {

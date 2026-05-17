@@ -1,14 +1,17 @@
 'use client';
 
 import { use, useEffect, useState } from 'react';
-import { Loader2, AlertCircle, RefreshCw } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import type { Route } from 'next';
+import { Loader2, AlertCircle, RefreshCw, Plug } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { useConnections } from '@/store/connections';
-import { api } from '@/lib/api';
+import { useSchemaCache } from '@/store/schemaCache';
 import { ENGINE_LABELS } from '@/lib/types';
 import { ERDiagram, type Schema } from '@dbstudio/erd';
+import { api } from '@/lib/api';
 
 type LoadState =
   | { kind: 'idle' }
@@ -19,13 +22,17 @@ type LoadState =
 export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
   const { id } = use(props.params);
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
+  const router = useRouter();
+  const loadSchema = useSchemaCache((s) => s.load);
+  const invalidateSchema = useSchemaCache((s) => s.invalidate);
   const [state, setState] = useState<LoadState>({ kind: 'idle' });
 
-  const load = async () => {
+  const load = async (force = false) => {
     if (!profile) return;
     setState({ kind: 'loading' });
+    if (force) invalidateSchema(profile.id);
     try {
-      const schema = await api.getSchema(profile);
+      const schema = await loadSchema(profile, force);
       setState({ kind: 'ok', schema });
     } catch (e: unknown) {
       const err = e as { code?: string; message?: string };
@@ -35,6 +42,26 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
         message: err.message ?? String(e),
       });
     }
+  };
+
+  // Drop the cached pool + SSH tunnel on the backend, then retry the load.
+  // Used when the user hits a stale-connection EOF.
+  const reconnectAndLoad = async () => {
+    if (!profile) return;
+    setState({ kind: 'loading' });
+    try {
+      await api.reconnect(profile);
+    } catch {
+      // disconnect errors are non-fatal — we still want to retry the load.
+    }
+    invalidateSchema(profile.id);
+    await load(true);
+  };
+
+  const onTableClick = (schemaName: string, tableName: string) => {
+    router.push(
+      `/connections/${id}/tables/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}` as Route,
+    );
   };
 
   useEffect(() => {
@@ -62,10 +89,27 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
               {ENGINE_LABELS[profile.engine]} · {profile.host}:{profile.port}/{profile.database}
             </p>
           </div>
-          <Button variant="outline" size="sm" onClick={load} disabled={state.kind === 'loading'}>
-            <RefreshCw className="h-3 w-3" />
-            Refresh
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={reconnectAndLoad}
+              disabled={state.kind === 'loading'}
+              title="Drop the pool + SSH tunnel and start over"
+            >
+              <Plug className="h-3 w-3" />
+              Reconnect
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => load(true)}
+              disabled={state.kind === 'loading'}
+            >
+              <RefreshCw className="h-3 w-3" />
+              Refresh
+            </Button>
+          </div>
         </header>
 
         <div className="relative flex-1 overflow-hidden">
@@ -87,12 +131,39 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
                 <p className="mt-1 text-xs text-muted-foreground">
                   <span className="font-mono">{state.code}</span> · {state.message}
                 </p>
+                {looksLikeStaleConnection(state.code, state.message) && (
+                  <div className="mt-4 space-y-2">
+                    <p className="text-xs text-muted-foreground">
+                      The cached connection looks dead — the SSH tunnel or database
+                      socket likely got closed. Reopen and retry.
+                    </p>
+                    <Button size="sm" onClick={reconnectAndLoad}>
+                      <Plug className="h-3 w-3" />
+                      Reconnect and retry
+                    </Button>
+                  </div>
+                )}
               </div>
             </div>
           )}
-          {state.kind === 'ok' && <ERDiagram schema={state.schema} />}
+          {state.kind === 'ok' && (
+            <ERDiagram schema={state.schema} onTableClick={onTableClick} />
+          )}
         </div>
       </div>
     </AppShell>
+  );
+}
+
+function looksLikeStaleConnection(code: string, message: string): boolean {
+  if (code === 'io_error' || code === 'ssh_tunnel_error' || code === 'connection_failed') {
+    return true;
+  }
+  const m = message.toLowerCase();
+  return (
+    m.includes('eof') ||
+    m.includes('broken pipe') ||
+    m.includes('connection reset') ||
+    m.includes('got 0 bytes')
   );
 }

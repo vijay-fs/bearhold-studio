@@ -5,11 +5,14 @@ import type { Schema } from '@dbstudio/erd';
 
 import { isDesktop } from './runtime';
 import type {
+  CellUpdate,
   CommandError,
   ConnectionProfile,
   DatabaseEngine,
   QueryRequest,
   QueryResult,
+  RowDelete,
+  RowInsert,
 } from './types';
 
 const API_BASE = process.env.NEXT_PUBLIC_DBSTUDIO_API ?? 'http://localhost:8080/api/v1';
@@ -48,6 +51,22 @@ export const api = {
     return invoke('run_query', { profile, request });
   },
 
+  // Single-cell UPDATE via parameterized SQL. Returns rows_affected — callers
+  // should refuse to treat ≠ 1 as success (PK didn't match, or PK was wrong).
+  updateCell(profile: ConnectionProfile, update: CellUpdate): Promise<number> {
+    return invoke('update_cell', { profile, update });
+  },
+
+  // INSERT a new row.
+  insertRow(profile: ConnectionProfile, request: RowInsert): Promise<number> {
+    return invoke('insert_row', { profile, request });
+  },
+
+  // DELETE a row identified by its PK.
+  deleteRow(profile: ConnectionProfile, request: RowDelete): Promise<number> {
+    return invoke('delete_row', { profile, request });
+  },
+
   setSecret(profileId: string, slot: SecretSlot, value: string): Promise<null> {
     return invoke('set_secret', { profileId, slot, value });
   },
@@ -69,6 +88,13 @@ export const api = {
   // the user to verify before pinning it on the profile.
   discoverHostKey(host: string, port: number): Promise<string> {
     return invoke('discover_host_key', { host, port });
+  },
+
+  // Drop the cached pool + SSH tunnel for a profile. Next query reopens
+  // both from scratch. Use after a stale-connection error or a network
+  // change.
+  reconnect(profile: ConnectionProfile): Promise<null> {
+    return invoke('reconnect', { profile });
   },
 };
 
