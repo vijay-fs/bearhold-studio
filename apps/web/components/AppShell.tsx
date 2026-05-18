@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import type { Route } from 'next';
@@ -11,10 +11,16 @@ import {
   Terminal as TerminalIcon,
   Pencil,
   Trash2,
+  Table2,
+  Search,
+  ChevronDown,
+  ChevronRight,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
-import { ENGINE_LABELS } from '@/lib/types';
+import { useSchemaCache } from '@/store/schemaCache';
+import { ENGINE_LABELS, type ConnectionProfile } from '@/lib/types';
+import { openTableInSql } from '@/lib/openTable';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -135,6 +141,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             <span>Delete</span>
                           </button>
                         </li>
+                        <li className="pt-1">
+                          <TableNav profile={p} pathname={pathname ?? ''} router={router} />
+                        </li>
                       </ul>
                     )}
                   </li>
@@ -207,5 +216,170 @@ function SubNavLink({
         <span>{label}</span>
       </Link>
     </li>
+  );
+}
+
+/**
+ * Filterable table list for the active connection. Lazy-loads the schema
+ * the first time the user opens the connection in the sidebar; afterwards
+ * the cached value is reused. Click a table → jump to the table browser
+ * route. Schema-qualifies the label only when the table isn't in the
+ * connection's default schema (`public` / `main` / the active DB) so the
+ * common case stays uncluttered.
+ */
+function TableNav({
+  profile,
+  pathname,
+  router,
+}: {
+  profile: ConnectionProfile;
+  pathname: string;
+  router: { push: (href: Route) => void };
+}) {
+  void pathname;
+  const schema = useSchemaCache((s) => s.entries[profile.id]?.schema);
+  const loadSchema = useSchemaCache((s) => s.load);
+  const inFlight = useSchemaCache((s) => Boolean(s.inFlight[profile.id]));
+  const [filter, setFilter] = useState('');
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Fire one fetch attempt when the panel opens with no cached schema.
+  // We don't aggressively re-fetch — the schema page or the SQL workspace
+  // will pull a fresh copy when the user gets there.
+  useEffect(() => {
+    if (schema || inFlight) return;
+    setLoadError(null);
+    void loadSchema(profile).catch((e: unknown) => {
+      const err = e as { code?: string; message?: string };
+      setLoadError(err.code ?? err.message ?? 'load failed');
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile.id]);
+
+  const defaultSchema = useMemo(() => {
+    if (profile.engine === 'mysql' || profile.engine === 'mariadb') return profile.database;
+    if (profile.engine === 'sqlite') return 'main';
+    return 'public';
+  }, [profile.engine, profile.database]);
+
+  // Flat list of every table in the connection, sorted alphabetically.
+  // Tables outside the connection's default schema get a `schema.` prefix
+  // in the displayed label so the user can tell which they're looking at.
+  const tables = useMemo(() => {
+    if (!schema) return [] as Array<{ schemaName: string; name: string; qualified: boolean }>;
+    const flat: Array<{ schemaName: string; name: string; qualified: boolean }> = [];
+    for (const ns of schema.schemas) {
+      for (const t of ns.tables) {
+        flat.push({
+          schemaName: ns.name,
+          name: t.name,
+          qualified: ns.name.toLowerCase() !== defaultSchema.toLowerCase(),
+        });
+      }
+    }
+    return flat.sort((a, b) => a.name.localeCompare(b.name));
+  }, [schema, defaultSchema]);
+
+  const filtered = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    if (!needle) return tables;
+    return tables.filter(
+      (t) =>
+        t.name.toLowerCase().includes(needle) ||
+        t.schemaName.toLowerCase().includes(needle),
+    );
+  }, [tables, filter]);
+
+  // Outer collapse — the whole Tables section folds away (search + list)
+  // behind a header toggle. Default expanded so the user sees their
+  // tables; clicking the header collapses the entire block to a single
+  // line that's easy to scroll past when working with many connections.
+  const [outerCollapsed, setOuterCollapsed] = useState(false);
+
+  if (loadError && !schema) {
+    return (
+      <div className="px-2 py-1 text-[10px] text-muted-foreground">
+        <span className="font-mono text-destructive">{loadError}</span> — open the
+        Schema page to retry.
+      </div>
+    );
+  }
+  if (!schema && inFlight) {
+    return (
+      <div className="px-2 py-1 text-[10px] text-muted-foreground">Loading tables…</div>
+    );
+  }
+  if (!schema) return null;
+  if (tables.length === 0) {
+    return <div className="px-2 py-1 text-[10px] text-muted-foreground">No tables.</div>;
+  }
+
+  return (
+    <div className="space-y-0.5">
+      <button
+        type="button"
+        onClick={() => setOuterCollapsed((v) => !v)}
+        className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-[9px] font-semibold uppercase tracking-wider text-muted-foreground hover:bg-accent/30 hover:text-foreground"
+        title={outerCollapsed ? 'Expand tables' : 'Collapse tables'}
+      >
+        {outerCollapsed ? (
+          <ChevronRight className="h-3 w-3 shrink-0" />
+        ) : (
+          <ChevronDown className="h-3 w-3 shrink-0" />
+        )}
+        <span>Tables</span>
+        <span className="ml-auto pr-1 font-normal text-muted-foreground/70">
+          {tables.length}
+        </span>
+      </button>
+      {outerCollapsed ? null : (
+        <>
+          <div className="relative px-2">
+            <Search className="absolute left-3.5 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter…"
+              className="h-6 w-full rounded border border-input bg-background pl-6 pr-2 text-[10px] placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+            />
+          </div>
+          <ul className="max-h-[44vh] space-y-0 overflow-y-auto px-1 pt-1">
+            {filtered.length === 0 ? (
+              <li className="px-1.5 py-1 text-[10px] text-muted-foreground">
+                No matches.
+              </li>
+            ) : (
+              filtered.map((t) => (
+                <li key={`${t.schemaName}.${t.name}`}>
+                  <button
+                    type="button"
+                    onClick={() => openTableInSql(router, profile, t.schemaName, t.name)}
+                    className={cn(
+                      'flex w-full items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px]',
+                      'text-muted-foreground hover:bg-accent/30 hover:text-foreground',
+                    )}
+                    title={`Open ${t.schemaName}.${t.name} in a new query tab`}
+                  >
+                    <Table2 className="h-3 w-3 shrink-0 opacity-70" />
+                    <span className="truncate">
+                      {t.qualified && (
+                        <span className="text-muted-foreground/70">
+                          {t.schemaName}.
+                        </span>
+                      )}
+                      {t.name}
+                    </span>
+                  </button>
+                </li>
+              ))
+            )}
+          </ul>
+        </>
+      )}
+    </div>
   );
 }

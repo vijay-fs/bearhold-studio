@@ -13,12 +13,15 @@ import {
   CheckCircle2,
   XCircle,
   Table2,
+  Bookmark,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
 import { useQueryHistory } from '@/store/queryHistory';
 import { useSchemaCache } from '@/store/schemaCache';
+import { useSnippets } from '@/store/snippets';
 import { ENGINE_LABELS } from '@/lib/types';
+import { openTableInSql } from '@/lib/openTable';
 
 /**
  * Global Cmd+K (Ctrl+K on non-mac) command palette. Mounted once at the
@@ -40,6 +43,7 @@ export function CommandPalette() {
   const profiles = useConnections((s) => s.profiles);
   const allHistory = useQueryHistory((s) => s.entries);
   const cachedSchemas = useSchemaCache((s) => s.entries);
+  const allSnippets = useSnippets((s) => s.entries);
 
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -74,6 +78,14 @@ export function CommandPalette() {
         ? allHistory.filter((e) => e.connectionId === activeConnectionId).slice(0, 25)
         : [],
     [allHistory, activeConnectionId],
+  );
+
+  const snippetsForConnection = useMemo(
+    () =>
+      activeConnectionId
+        ? allSnippets.filter((s) => s.connectionId === activeConnectionId)
+        : [],
+    [allSnippets, activeConnectionId],
   );
 
   // Tables for the active connection, sourced from the cached schema. If the
@@ -187,13 +199,27 @@ export function CommandPalette() {
                   label={table}
                   meta={schema}
                   keywords={[schema, 'browse', 'data']}
-                  onSelect={() =>
-                    go(
-                      `/connections/${activeConnectionId}/tables/${encodeURIComponent(
-                        schema,
-                      )}/${encodeURIComponent(table)}` as Route,
-                    )
-                  }
+                  onSelect={() => {
+                    const profile = profiles.find((p) => p.id === activeConnectionId);
+                    if (!profile) return;
+                    openTableInSql(router, profile, schema, table);
+                    close();
+                  }}
+                />
+              ))}
+            </Command.Group>
+          )}
+
+          {snippetsForConnection.length > 0 && activeConnectionId && (
+            <Command.Group heading="Snippets" className="palette-group">
+              {snippetsForConnection.map((snippet) => (
+                <PaletteItem
+                  key={snippet.id}
+                  icon={<Bookmark className="h-3.5 w-3.5 text-amber-500" />}
+                  label={snippet.name}
+                  meta="saved query"
+                  keywords={[snippet.sql]}
+                  onSelect={() => loadRecentQuery(snippet.id, snippet.sql)}
                 />
               ))}
             </Command.Group>

@@ -2,7 +2,6 @@
 
 import { use, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { Route } from 'next';
 import { Loader2, AlertCircle, RefreshCw, Plug } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
@@ -12,6 +11,7 @@ import { useSchemaCache } from '@/store/schemaCache';
 import { ENGINE_LABELS } from '@/lib/types';
 import { ERDiagram, type Schema } from '@dbstudio/erd';
 import { api } from '@/lib/api';
+import { openTableInSql } from '@/lib/openTable';
 
 type LoadState =
   | { kind: 'idle' }
@@ -59,9 +59,8 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
   };
 
   const onTableClick = (schemaName: string, tableName: string) => {
-    router.push(
-      `/connections/${id}/tables/${encodeURIComponent(schemaName)}/${encodeURIComponent(tableName)}` as Route,
-    );
+    if (!profile) return;
+    openTableInSql(router, profile, schemaName, tableName);
   };
 
   useEffect(() => {

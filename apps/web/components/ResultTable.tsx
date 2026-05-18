@@ -18,7 +18,6 @@ import {
   Download,
   FilterX,
   Loader2,
-  Pencil,
   Plus,
   RotateCcw,
   Search,
@@ -224,14 +223,20 @@ export function ResultTable({
       const rowId = event.node.id;
       if (!field || rowId == null) return;
       const { oldValue, newValue, data, node } = event;
-      if (oldValue === newValue) return;
+      // Type-aware no-op check. AG Grid's number editor may reformat the
+      // value on open (`"12.8000"` → `12.8`); without column-type-aware
+      // equality, that round-trip alone registers a phantom pending edit
+      // even though nothing changed semantically.
+      const colMeta = editable.tableColumns.find((c) => c.name === field);
+      const dataType = colMeta?.data_type ?? '';
+      if (valuesEqual(oldValue, newValue, dataType)) return;
       const rowMap = pendingEditsRef.current.get(rowId) ?? new Map();
       const existing = rowMap.get(field);
 
       if (existing) {
         // The user edited this cell again. If they typed it back to the
         // original, drop the pending edit entirely.
-        if (cellEqual(existing.originalValue, newValue)) {
+        if (valuesEqual(existing.originalValue, newValue, dataType)) {
           rowMap.delete(field);
         } else {
           existing.newValue = newValue;
@@ -540,11 +545,6 @@ export function ResultTable({
           {result.rows_affected != null && ` · ${result.rows_affected} affected`}
           {result.columns.length > 0 &&
             ` · ${result.columns.length} col${result.columns.length === 1 ? '' : 's'}`}
-          {editable && editableReady && (
-            <span className="ml-2 inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400">
-              <Pencil className="h-3 w-3" /> editable — double-click a cell
-            </span>
-          )}
           {editable && !editableReady && (
             <span className="ml-2 text-amber-600 dark:text-amber-400">
               read-only · PK columns ({editable.pkColumns.join(', ') || 'none'}) missing from result
@@ -1009,15 +1009,44 @@ function countPending(map: Map<string, Map<string, PendingEdit>>): number {
   return n;
 }
 
-/** Equality used to detect "user typed value back to original" for cell
- *  edits. Number/Number comparison handles AG Grid's number-cell-editor
- *  output cleanly; everything else falls back to string-comparison so
- *  `"5"` vs `5` aren't treated as the same. */
-function cellEqual(a: unknown, b: unknown): boolean {
+/** Type-aware equality for cell values. Drivers decode NUMERIC and similar
+ *  high-precision types as strings to preserve scale, but AG Grid's number
+ *  editor returns a JS `number` — so a "no-op" reopen-and-blur of a cell
+ *  showing "12.8000" comes back as `12.8`, which a naive `===` check
+ *  reports as different.
+ *
+ *  For numeric columns we coerce both sides to `Number` and compare; for
+ *  booleans we coerce both sides to bool; everything else falls back to
+ *  string comparison so `"5"` vs `5` in a text column still registers as
+ *  a real change. */
+function valuesEqual(a: unknown, b: unknown, dataType: string): boolean {
   if (a === b) return true;
   if (a == null && b == null) return true;
-  if (typeof a === 'number' && typeof b === 'number') return a === b;
+  if (a == null || b == null) return false;
+
+  const t = dataType.toLowerCase();
+  if (/(int|serial|bigint|smallint|mediumint|tinyint|numeric|decimal|real|double|float|money)/.test(t)) {
+    const aNum = typeof a === 'number' ? a : Number(a);
+    const bNum = typeof b === 'number' ? b : Number(b);
+    if (Number.isFinite(aNum) && Number.isFinite(bNum)) return aNum === bNum;
+  }
+  if (/(bool)/.test(t)) {
+    const aBool = toBoolish(a);
+    const bBool = toBoolish(b);
+    if (aBool !== null && bBool !== null) return aBool === bBool;
+  }
   return String(a) === String(b);
+}
+
+function toBoolish(v: unknown): boolean | null {
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'number') return v !== 0;
+  if (typeof v === 'string') {
+    const s = v.toLowerCase();
+    if (s === 'true' || s === '1' || s === 't' || s === 'yes') return true;
+    if (s === 'false' || s === '0' || s === 'f' || s === 'no') return false;
+  }
+  return null;
 }
 
 function isNumericType(t: string): boolean {

@@ -9,6 +9,7 @@ import {
   History,
   Plus,
   X,
+  Bookmark,
 } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
@@ -16,6 +17,7 @@ import { Button } from '@/components/ui/button';
 import { SqlEditor, type SqlEditorHandle } from '@/components/SqlEditor';
 import { ResultTable } from '@/components/ResultTable';
 import { QueryHistoryPanel } from '@/components/QueryHistoryPanel';
+import { SnippetsPanel, SaveSnippetDialog } from '@/components/SnippetsPanel';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -26,6 +28,7 @@ import { useConnections } from '@/store/connections';
 import { useQueryHistory } from '@/store/queryHistory';
 import { useSchemaCache } from '@/store/schemaCache';
 import { useSqlTabs } from '@/store/sqlTabs';
+import { useSnippets } from '@/store/snippets';
 import { api } from '@/lib/api';
 import { ENGINE_LABELS, type QueryResult } from '@/lib/types';
 import type { Schema } from '@dbstudio/erd';
@@ -80,7 +83,11 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   // result + error panel. Switching tabs swaps the visible panel; reloading
   // the page drops all run state (results don't persist — rerun is cheap).
   const [runByTab, setRunByTab] = useState<Record<string, RunState>>({});
-  const [bottomTab, setBottomTab] = useState<'results' | 'history'>('results');
+  const [bottomTab, setBottomTab] = useState<'results' | 'history' | 'snippets'>(
+    'results',
+  );
+  const [saveSnippetOpen, setSaveSnippetOpen] = useState(false);
+  const createSnippet = useSnippets((s) => s.create);
 
   // First load for this connection: make sure there's at least one tab.
   useEffect(() => {
@@ -100,25 +107,34 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [profile?.id]);
 
-  // Command palette → open recent query in a NEW tab so we don't clobber
-  // the current one. The CommandPalette dispatches `palette-load-sql`
-  // after navigating us here; we also drain any pending sessionStorage
-  // stash (handles the race where the event fires before mount).
+  // Any feature that wants to "open this SQL in a new tab" goes through
+  // the `palette-load-sql` event (table-open from the schema view, sidebar
+  // table click, command palette, history rerun). The `autoRun` flag in
+  // the event detail decides whether we also fire the query immediately —
+  // which is the case for the table-browse flow.
+  //
+  // The same payload is mirrored to sessionStorage so that when the
+  // trigger came from a different route (navigation hasn't completed when
+  // the event fires), we drain it on mount.
   useEffect(() => {
     if (!profile) return;
+    const open = (sql: string, autoRun: boolean) => {
+      loadIntoNewTab(profile.id, sql);
+      setBottomTab('results');
+      if (autoRun) setTimeout(() => void onRun(sql), 0);
+    };
     const onPaletteLoad = (e: Event) => {
-      const detail = (e as CustomEvent<{ sql: string }>).detail;
-      if (detail?.sql) {
-        loadIntoNewTab(profile.id, detail.sql);
-        setBottomTab('results');
-      }
+      const detail = (e as CustomEvent<{ sql: string; autoRun?: boolean }>).detail;
+      if (detail?.sql) open(detail.sql, Boolean(detail.autoRun));
     };
     window.addEventListener('palette-load-sql', onPaletteLoad as EventListener);
     const pending = sessionStorage.getItem('dbstudio.pendingSql');
     if (pending) {
-      loadIntoNewTab(profile.id, pending);
+      const autoRun = sessionStorage.getItem('dbstudio.pendingSqlAutoRun') === '1';
       sessionStorage.removeItem('dbstudio.pendingSql');
       sessionStorage.removeItem('dbstudio.pendingSqlEntry');
+      sessionStorage.removeItem('dbstudio.pendingSqlAutoRun');
+      open(pending, autoRun);
     }
     return () =>
       window.removeEventListener('palette-load-sql', onPaletteLoad as EventListener);
@@ -180,8 +196,14 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   // ---- run --------------------------------------------------------------
 
   const onRun = async (sqlToRun: string) => {
-    if (!profile || !activeTab) return;
-    const tabId = activeTab.id;
+    if (!profile) return;
+    // Read the active tab from the store, not the closure — when this is
+    // called via setTimeout after `loadIntoNewTab`, the React render that
+    // would update our captured `activeTab` hasn't committed yet, so the
+    // closure still points at the previously-active tab. The store has
+    // the freshly-set active id immediately.
+    const tabId = useSqlTabs.getState().byConnection[profile.id]?.activeId;
+    if (!tabId) return;
     setRunByTab((m) => ({ ...m, [tabId]: { kind: 'running' } }));
     setBottomTab('results');
     const startedAt = performance.now();
@@ -237,18 +259,30 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
               <kbd className="rounded border px-1 text-[10px]">T</kbd> new tab
             </p>
           </div>
-          <Button
-            size="sm"
-            onClick={() => editorRef.current?.run()}
-            disabled={state.kind === 'running'}
-          >
-            {state.kind === 'running' ? (
-              <Loader2 className="h-3 w-3 animate-spin" />
-            ) : (
-              <Play className="h-3 w-3" />
-            )}
-            Run
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setSaveSnippetOpen(true)}
+              disabled={!activeTab?.sql.trim()}
+              title="Save this query as a snippet"
+            >
+              <Bookmark className="h-3 w-3" />
+              Save
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => editorRef.current?.run()}
+              disabled={state.kind === 'running'}
+            >
+              {state.kind === 'running' ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="h-3 w-3" />
+              )}
+              Run
+            </Button>
+          </div>
         </header>
 
         <TabBar
@@ -291,7 +325,9 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
           <ResizablePanel defaultSize={45} minSize={15}>
             <Tabs
               value={bottomTab}
-              onValueChange={(v) => setBottomTab(v as 'results' | 'history')}
+              onValueChange={(v) =>
+                setBottomTab(v as 'results' | 'history' | 'snippets')
+              }
               className="flex h-full flex-col"
             >
               <TabsList className="m-2 mb-0 h-8 self-start">
@@ -302,6 +338,10 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                 <TabsTrigger value="history" className="gap-1.5">
                   <History className="h-3 w-3" />
                   History
+                </TabsTrigger>
+                <TabsTrigger value="snippets" className="gap-1.5">
+                  <Bookmark className="h-3 w-3" />
+                  Snippets
                 </TabsTrigger>
               </TabsList>
               <TabsContent value="results" className="mt-0 flex-1 overflow-hidden">
@@ -348,10 +388,36 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                   }}
                 />
               </TabsContent>
+              <TabsContent value="snippets" className="mt-0 flex-1 overflow-hidden">
+                <SnippetsPanel
+                  connectionId={profile.id}
+                  onLoad={(s) => {
+                    loadIntoNewTab(profile.id, s);
+                    setBottomTab('results');
+                  }}
+                  onRerun={(s) => {
+                    loadIntoNewTab(profile.id, s);
+                    setBottomTab('results');
+                    setTimeout(() => void onRun(s), 0);
+                  }}
+                />
+              </TabsContent>
             </Tabs>
           </ResizablePanel>
         </ResizablePanelGroup>
       </div>
+
+      <SaveSnippetDialog
+        open={saveSnippetOpen}
+        initialName={activeTab?.title ?? ''}
+        onCancel={() => setSaveSnippetOpen(false)}
+        onSave={(name) => {
+          if (!activeTab) return;
+          createSnippet(profile.id, name, activeTab.sql);
+          setSaveSnippetOpen(false);
+          setBottomTab('snippets');
+        }}
+      />
     </AppShell>
   );
 }

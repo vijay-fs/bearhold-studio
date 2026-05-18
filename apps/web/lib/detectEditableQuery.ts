@@ -89,31 +89,42 @@ function caseInsensitiveEq(a: string, b: string): boolean {
 }
 
 /** Pull the last semicolon-separated statement, respecting strings/comments
- *  so we don't trip over `';'` inside literals. */
+ *  so we don't trip over `';'` inside literals.
+ *
+ *  A trailing `;` at the very end of the input is a *terminator*, not a
+ *  *separator* — every Postgres / MySQL / SQLite user writes
+ *  `SELECT * FROM products;` and means "one statement that ends here", not
+ *  "two statements: SELECT ..., then nothing". We strip that trailing
+ *  semicolon (and any trailing whitespace) before scanning for boundaries,
+ *  so a single-statement script terminating in `;` is recognised as such. */
 function lastStatement(sql: string): string | null {
+  // Trim trailing whitespace, then a single optional terminator.
+  let input = sql.replace(/\s+$/, '');
+  if (input.endsWith(';')) input = input.slice(0, -1);
+
   const boundaries: number[] = [-1];
   let i = 0;
-  while (i < sql.length) {
-    const c = sql[i];
-    const n = sql[i + 1];
+  while (i < input.length) {
+    const c = input[i];
+    const n = input[i + 1];
     // Line comment
     if (c === '-' && n === '-') {
       i += 2;
-      while (i < sql.length && sql[i] !== '\n') i++;
+      while (i < input.length && input[i] !== '\n') i++;
       continue;
     }
     // Block comment
     if (c === '/' && n === '*') {
       i += 2;
-      while (i + 1 < sql.length && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
-      i = Math.min(i + 2, sql.length);
+      while (i + 1 < input.length && !(input[i] === '*' && input[i + 1] === '/')) i++;
+      i = Math.min(i + 2, input.length);
       continue;
     }
     // Single-quoted string
     if (c === "'") {
       i++;
-      while (i < sql.length && sql[i] !== "'") {
-        if (sql[i] === '\\') i++;
+      while (i < input.length && input[i] !== "'") {
+        if (input[i] === '\\') i++;
         i++;
       }
       i++;
@@ -122,14 +133,14 @@ function lastStatement(sql: string): string | null {
     // Double-quoted identifier
     if (c === '"') {
       i++;
-      while (i < sql.length && sql[i] !== '"') i++;
+      while (i < input.length && input[i] !== '"') i++;
       i++;
       continue;
     }
     // Backticked identifier (MySQL)
     if (c === '`') {
       i++;
-      while (i < sql.length && sql[i] !== '`') i++;
+      while (i < input.length && input[i] !== '`') i++;
       i++;
       continue;
     }
@@ -137,7 +148,7 @@ function lastStatement(sql: string): string | null {
     i++;
   }
   const lastBoundary = boundaries[boundaries.length - 1] ?? -1;
-  const candidate = sql.slice(lastBoundary + 1).trim();
+  const candidate = input.slice(lastBoundary + 1).trim();
   return candidate.length > 0 ? candidate : null;
 }
 

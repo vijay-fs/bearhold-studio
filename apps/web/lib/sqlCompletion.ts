@@ -11,20 +11,21 @@
 import type { editor, languages, IRange } from 'monaco-editor';
 import type { Schema } from '@dbstudio/erd';
 import type { DatabaseEngine } from './types';
-
-/** Identifier-quoting style used by the suggestion's `insertText`. MySQL and
- *  MariaDB need backticks; everything else uses ANSI double-quotes. The
- *  user's typing style isn't enough to infer this reliably — we drive it
- *  off the active profile's engine instead. */
-type QuoteStyle = 'ansi' | 'backtick';
+import {
+  softQuoteIdent,
+  quoteStyleForEngine,
+  type QuoteStyle,
+} from './sqlIdent';
 
 function quoteStyleFor(engine: DatabaseEngine | null): QuoteStyle {
-  return engine === 'mysql' || engine === 'mariadb' ? 'backtick' : 'ansi';
+  return engine ? quoteStyleForEngine(engine) : 'ansi';
 }
 
+/** Soft-quote: emit bare name when safe (lowercase, alphanumeric, not
+ *  reserved), otherwise quoted for the engine. The user-typed input
+ *  works either way; this just keeps generated snippets readable. */
 function quote(name: string, style: QuoteStyle): string {
-  if (style === 'backtick') return `\`${name.replace(/`/g, '``')}\``;
-  return `"${name.replace(/"/g, '""')}"`;
+  return softQuoteIdent(name, style);
 }
 
 // Subset of ANSI/PG/MySQL/SQLite keywords. Lowercased; we uppercase on emit
