@@ -12,6 +12,11 @@ const NODE_VERTICAL_PADDING = 8;
 export interface TableNodeData {
   table: Table;
   isReferenced: boolean;
+  /** Names of columns in this table that some other table's FK points at.
+   *  The node uses this to decide whether to render the left-side target
+   *  handle on a given row — columns with no incoming FK get no handle at
+   *  all, so the canvas isn't dotted with floating connectors. */
+  incomingFkColumns: string[];
   [key: string]: unknown;
 }
 
@@ -43,9 +48,20 @@ export function layoutSchema(
   }
 
   const referenced = new Set<string>();
+  // Map of tableKey -> Set<columnName> of columns that are the target of
+  // at least one FK from another (or the same) table. Used by TableNode to
+  // decide whether to render the left-side handle on each row.
+  const incomingByTable = new Map<string, Set<string>>();
   for (const t of tables) {
     for (const fk of t.foreign_keys) {
-      referenced.add(tableKey(fk.references_schema, fk.references_table));
+      const targetKey = tableKey(fk.references_schema, fk.references_table);
+      referenced.add(targetKey);
+      let set = incomingByTable.get(targetKey);
+      if (!set) {
+        set = new Set();
+        incomingByTable.set(targetKey, set);
+      }
+      for (const col of fk.references_columns) set.add(col);
     }
   }
 
@@ -106,7 +122,11 @@ export function layoutSchema(
       id: key,
       type: 'tableNode',
       position: { x: pos.x - pos.width / 2, y: pos.y - pos.height / 2 },
-      data: { table: t, isReferenced: referenced.has(key) },
+      data: {
+        table: t,
+        isReferenced: referenced.has(key),
+        incomingFkColumns: Array.from(incomingByTable.get(key) ?? []),
+      },
       width: NODE_WIDTH,
     };
   });

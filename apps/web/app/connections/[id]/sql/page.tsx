@@ -10,6 +10,7 @@ import {
   Plus,
   X,
   Bookmark,
+  Activity,
 } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
@@ -18,6 +19,11 @@ import { SqlEditor, type SqlEditorHandle } from '@/components/SqlEditor';
 import { ResultTable } from '@/components/ResultTable';
 import { QueryHistoryPanel } from '@/components/QueryHistoryPanel';
 import { SnippetsPanel, SaveSnippetDialog } from '@/components/SnippetsPanel';
+import {
+  PlanViewer,
+  buildExplainSql,
+  explainSupportedFor,
+} from '@/components/PlanViewer';
 import {
   ResizableHandle,
   ResizablePanel,
@@ -54,6 +60,14 @@ type RunState =
   | { kind: 'ok'; result: QueryResult; sql: string }
   | { kind: 'error'; code: string; message: string };
 
+type PlanState =
+  | { kind: 'idle' }
+  | { kind: 'running' }
+  | { kind: 'ok'; result: QueryResult }
+  | { kind: 'error'; code: string; message: string };
+
+type BottomTab = 'results' | 'plan' | 'history' | 'snippets';
+
 export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   const { id } = use(props.params);
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
@@ -83,9 +97,8 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   // result + error panel. Switching tabs swaps the visible panel; reloading
   // the page drops all run state (results don't persist — rerun is cheap).
   const [runByTab, setRunByTab] = useState<Record<string, RunState>>({});
-  const [bottomTab, setBottomTab] = useState<'results' | 'history' | 'snippets'>(
-    'results',
-  );
+  const [planByTab, setPlanByTab] = useState<Record<string, PlanState>>({});
+  const [bottomTab, setBottomTab] = useState<BottomTab>('results');
   const [saveSnippetOpen, setSaveSnippetOpen] = useState(false);
   const createSnippet = useSnippets((s) => s.create);
 
@@ -178,6 +191,10 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
 
   const activeTab = slot?.tabs.find((t) => t.id === slot.activeId) ?? slot?.tabs[0] ?? null;
   const state: RunState = activeTab ? (runByTab[activeTab.id] ?? { kind: 'idle' }) : { kind: 'idle' };
+  const planState: PlanState = activeTab
+    ? (planByTab[activeTab.id] ?? { kind: 'idle' })
+    : { kind: 'idle' };
+  const canExplain = explainSupportedFor(profile?.engine ?? 'postgres');
 
   // Light up editing on the result grid when the user's SQL was a plain
   // `SELECT * FROM <known_table>` — joins, projections, and CTEs stay
@@ -194,6 +211,40 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   })();
 
   // ---- run --------------------------------------------------------------
+
+  /** Run the user's query wrapped with EXPLAIN (ANALYZE, ...) and route the
+   *  result to the Plan tab. The plan tab is per-tab, mirroring `runByTab`,
+   *  so each editor tab keeps its last plan independent of others. We do
+   *  not write history entries here — EXPLAIN runs are diagnostic, the
+   *  history panel is for queries the user actually meant to issue. */
+  const onExplain = async () => {
+    if (!profile) return;
+    if (!explainSupportedFor(profile.engine)) return;
+    const tabId = useSqlTabs.getState().byConnection[profile.id]?.activeId;
+    if (!tabId) return;
+    const sql = useSqlTabs
+      .getState()
+      .byConnection[profile.id]?.tabs.find((t) => t.id === tabId)?.sql;
+    if (!sql?.trim()) return;
+    const wrapped = buildExplainSql(profile.engine, sql);
+    if (!wrapped) return;
+    setPlanByTab((m) => ({ ...m, [tabId]: { kind: 'running' } }));
+    setBottomTab('plan');
+    try {
+      const result = await api.runQuery(profile, { sql: wrapped });
+      setPlanByTab((m) => ({ ...m, [tabId]: { kind: 'ok', result } }));
+    } catch (e: unknown) {
+      const err = e as { code?: string; message?: string };
+      setPlanByTab((m) => ({
+        ...m,
+        [tabId]: {
+          kind: 'error',
+          code: err.code ?? 'unknown',
+          message: err.message ?? String(e),
+        },
+      }));
+    }
+  };
 
   const onRun = async (sqlToRun: string) => {
     if (!profile) return;
@@ -270,6 +321,24 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
               <Bookmark className="h-3 w-3" />
               Save
             </Button>
+            {canExplain && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => void onExplain()}
+                disabled={
+                  planState.kind === 'running' || !activeTab?.sql.trim()
+                }
+                title="Run EXPLAIN ANALYZE on this query"
+              >
+                {planState.kind === 'running' ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Activity className="h-3 w-3" />
+                )}
+                Explain
+              </Button>
+            )}
             <Button
               size="sm"
               onClick={() => editorRef.current?.run()}
@@ -292,6 +361,7 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
           onClose={(tid) => {
             closeTab(profile.id, tid);
             setRunByTab(({ [tid]: _, ...rest }) => rest);
+            setPlanByTab(({ [tid]: _, ...rest }) => rest);
           }}
           onNew={() => newTab(profile.id, '')}
         />
@@ -325,9 +395,7 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
           <ResizablePanel defaultSize={45} minSize={15}>
             <Tabs
               value={bottomTab}
-              onValueChange={(v) =>
-                setBottomTab(v as 'results' | 'history' | 'snippets')
-              }
+              onValueChange={(v) => setBottomTab(v as BottomTab)}
               className="flex h-full flex-col"
             >
               <TabsList className="m-2 mb-0 h-8 self-start">
@@ -335,6 +403,12 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                   <Table2 className="h-3 w-3" />
                   Results
                 </TabsTrigger>
+                {canExplain && (
+                  <TabsTrigger value="plan" className="gap-1.5">
+                    <Activity className="h-3 w-3" />
+                    Plan
+                  </TabsTrigger>
+                )}
                 <TabsTrigger value="history" className="gap-1.5">
                   <History className="h-3 w-3" />
                   History
@@ -371,6 +445,42 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                   <ResultTable result={state.result} editable={editable} />
                 )}
               </TabsContent>
+              {canExplain && (
+                <TabsContent value="plan" className="mt-0 flex-1 overflow-hidden">
+                  {planState.kind === 'idle' && (
+                    <p className="p-4 text-xs text-muted-foreground">
+                      Click Explain to run EXPLAIN ANALYZE on the active query
+                      and see the plan tree here.
+                    </p>
+                  )}
+                  {planState.kind === 'running' && (
+                    <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
+                      <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                      Running EXPLAIN...
+                    </div>
+                  )}
+                  {planState.kind === 'error' && (
+                    <div className="p-5">
+                      <div className="flex items-center gap-2 text-destructive">
+                        <AlertCircle className="h-4 w-4" />
+                        <span className="text-sm font-semibold">
+                          EXPLAIN failed
+                        </span>
+                      </div>
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        <span className="font-mono">{planState.code}</span> ·{' '}
+                        {planState.message}
+                      </p>
+                    </div>
+                  )}
+                  {planState.kind === 'ok' && (
+                    <PlanViewer
+                      result={planState.result}
+                      engine={profile.engine}
+                    />
+                  )}
+                </TabsContent>
+              )}
               <TabsContent value="history" className="mt-0 flex-1 overflow-hidden">
                 <QueryHistoryPanel
                   connectionId={profile.id}

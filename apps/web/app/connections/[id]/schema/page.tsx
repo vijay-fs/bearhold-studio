@@ -12,6 +12,7 @@ import { ENGINE_LABELS } from '@/lib/types';
 import { ERDiagram, type Schema } from '@dbstudio/erd';
 import { api } from '@/lib/api';
 import { openTableInSql } from '@/lib/openTable';
+import { TableDetailsDrawer } from '@/components/TableDetailsDrawer';
 
 type LoadState =
   | { kind: 'idle' }
@@ -26,6 +27,11 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
   const loadSchema = useSchemaCache((s) => s.load);
   const invalidateSchema = useSchemaCache((s) => s.invalidate);
   const [state, setState] = useState<LoadState>({ kind: 'idle' });
+  // Selected table for the right-side details drawer. Clicking a node sets
+  // this; the drawer renders unconditionally and just shows/hides on null.
+  const [selectedTable, setSelectedTable] = useState<
+    { schema: string; table: string } | null
+  >(null);
 
   const load = async (force = false) => {
     if (!profile) return;
@@ -58,7 +64,15 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
     await load(true);
   };
 
+  // Clicking a node opens the details drawer rather than jumping straight
+  // into the SQL workspace. The drawer's footer still exposes "Open in SQL"
+  // for the previous behaviour when the user has confirmed the table is
+  // the one they want.
   const onTableClick = (schemaName: string, tableName: string) => {
+    setSelectedTable({ schema: schemaName, table: tableName });
+  };
+
+  const openSelectionInSql = (schemaName: string, tableName: string) => {
     if (!profile) return;
     openTableInSql(router, profile, schemaName, tableName);
   };
@@ -149,6 +163,15 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
             <ERDiagram schema={state.schema} onTableClick={onTableClick} />
           )}
         </div>
+
+        {state.kind === 'ok' && (
+          <TableDetailsDrawer
+            schema={state.schema}
+            selection={selectedTable}
+            onClose={() => setSelectedTable(null)}
+            onOpenInSql={openSelectionInSql}
+          />
+        )}
       </div>
     </AppShell>
   );

@@ -4,6 +4,23 @@ import clsx from 'clsx';
 import type { Column } from './types';
 import type { TableNodeData } from './layout';
 
+/** Compact representation of a SQL type for in-node display. Full literal
+ *  values (e.g. `enum('alpha','beta','gamma')`) get collapsed to just the
+ *  kind so the row stays inside the node box; the full type is still
+ *  available in the details drawer. */
+function compactType(raw: string): string {
+  const t = raw.trim();
+  if (!t) return t;
+  const lower = t.toLowerCase();
+  if (lower.startsWith('enum(')) return 'enum';
+  if (lower.startsWith('set(')) return 'set';
+  // `character varying(255)` -> `varchar(255)`; just shorthand.
+  if (lower.startsWith('character varying')) {
+    return t.replace(/character varying/i, 'varchar');
+  }
+  return t;
+}
+
 interface TableNodeProps {
   data: TableNodeData;
   selected?: boolean;
@@ -12,28 +29,29 @@ interface TableNodeProps {
 /**
  * Visual representation of a database table for the ER diagram.
  *
- * Each column row owns a pair of (invisible) handles — one target on the left
- * and one source on the right. Edges produced by `layoutSchema` reference
- * these by id, so an FK relationship lands on the exact column it represents
- * instead of generic top-of-table connectors. Handles are styled invisibly so
- * unused ones don't leave stray dots in the canvas.
+ * Each column row may own one or both handles — a left-side `target` and a
+ * right-side `source`. Both are conditional: we only render a handle on a
+ * column that actually anchors an edge. Columns with neither incoming nor
+ * outgoing FKs render no handles at all, so the canvas isn't littered with
+ * floating dots on every row.
  */
 export function TableNode({ data, selected }: TableNodeProps) {
-  const { table } = data;
+  const { table, incomingFkColumns } = data;
   const pkColumns = new Set(table.primary_key?.columns ?? []);
-  const fkColumns = new Set<string>();
+  const fkSourceColumns = new Set<string>();
   for (const fk of table.foreign_keys) {
-    for (const c of fk.columns) fkColumns.add(c);
+    for (const c of fk.columns) fkSourceColumns.add(c);
   }
+  const fkTargetColumns = new Set<string>(incomingFkColumns);
 
   return (
     <div
       className={clsx(
-        'min-w-[280px] rounded-md border bg-card text-card-foreground shadow-sm transition-shadow',
+        'w-[280px] rounded-md border bg-card text-card-foreground shadow-sm transition-shadow',
         selected ? 'ring-2 ring-ring shadow-md' : 'ring-0',
       )}
     >
-      <div className="border-b bg-secondary/60 px-3 py-1.5 text-[11px] font-semibold tracking-wide">
+      <div className="truncate border-b bg-secondary/60 px-3 py-1.5 text-[11px] font-semibold tracking-wide">
         <span className="text-muted-foreground">{table.schema}.</span>
         <span>{table.name}</span>
       </div>
@@ -43,7 +61,9 @@ export function TableNode({ data, selected }: TableNodeProps) {
             key={col.name}
             column={col}
             isPk={pkColumns.has(col.name)}
-            isFk={fkColumns.has(col.name)}
+            isFk={fkSourceColumns.has(col.name)}
+            hasIncomingFk={fkTargetColumns.has(col.name)}
+            hasOutgoingFk={fkSourceColumns.has(col.name)}
           />
         ))}
       </ul>
@@ -51,8 +71,9 @@ export function TableNode({ data, selected }: TableNodeProps) {
   );
 }
 
-// Handles are functional but visually invisible — connection lines still
-// anchor here, but no dot is drawn at the row edges.
+// Handles still need a non-zero hit area for React Flow to anchor edges to,
+// but we render them dot-less so unused/used handles look the same and the
+// connection lines emerge directly from the row edge.
 const HANDLE_HIDDEN =
   '!h-[6px] !w-[6px] !min-h-0 !min-w-0 !rounded-full !border-0 !bg-transparent !opacity-0';
 
@@ -60,10 +81,14 @@ function ColumnRow({
   column,
   isPk,
   isFk,
+  hasIncomingFk,
+  hasOutgoingFk,
 }: {
   column: Column;
   isPk: boolean;
   isFk: boolean;
+  hasIncomingFk: boolean;
+  hasOutgoingFk: boolean;
 }) {
   return (
     <li
@@ -73,13 +98,15 @@ function ColumnRow({
         !isPk && isFk && 'bg-sky-50/60 dark:bg-sky-500/5',
       )}
     >
-      <Handle
-        type="target"
-        position={Position.Left}
-        id={`${column.name}::target`}
-        className={HANDLE_HIDDEN}
-        isConnectable={false}
-      />
+      {hasIncomingFk && (
+        <Handle
+          type="target"
+          position={Position.Left}
+          id={`${column.name}::target`}
+          className={HANDLE_HIDDEN}
+          isConnectable={false}
+        />
+      )}
 
       <span className="flex w-5 shrink-0 items-center justify-center">
         {isPk && <KeyIcon className="h-3 w-3 text-amber-500" title="Primary key" />}
@@ -88,25 +115,36 @@ function ColumnRow({
 
       <span
         className={clsx(
-          'flex-1 truncate',
+          'min-w-0 flex-1 truncate',
           column.nullable ? 'text-foreground/80' : 'font-semibold',
         )}
+        title={column.name}
       >
         {column.name}
       </span>
 
-      <span className="shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground">
-        {column.data_type}
-        {!column.nullable && <span className="ml-1 text-foreground/60">·NOT NULL</span>}
+      {/* Type stays on the same baseline as the name — fixed single line.
+          Long literal types (enum('a','b'), character varying(255)) are
+          collapsed via `compactType` so the row never overflows the node;
+          the full type, default, and comment live in the details drawer
+          opened by clicking the table header. */}
+      <span
+        className="shrink-0 text-[9px] uppercase tracking-wider text-muted-foreground"
+        title={column.data_type + (!column.nullable ? ' · NOT NULL' : '')}
+      >
+        {compactType(column.data_type)}
+        {!column.nullable && <span className="ml-1 text-foreground/60">·NN</span>}
       </span>
 
-      <Handle
-        type="source"
-        position={Position.Right}
-        id={`${column.name}::source`}
-        className={HANDLE_HIDDEN}
-        isConnectable={false}
-      />
+      {hasOutgoingFk && (
+        <Handle
+          type="source"
+          position={Position.Right}
+          id={`${column.name}::source`}
+          className={HANDLE_HIDDEN}
+          isConnectable={false}
+        />
+      )}
     </li>
   );
 }
