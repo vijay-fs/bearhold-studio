@@ -1,6 +1,7 @@
 'use client';
 
 import { use, useEffect, useRef, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   Loader2,
   Play,
@@ -13,6 +14,7 @@ import {
   Wand2,
   Square,
   Ban,
+  Plug,
 } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
@@ -41,6 +43,7 @@ import { ENGINE_LABELS, type QueryResult } from '@/lib/types';
 import type { Schema } from '@dbstudio/erd';
 import { cn } from '@/lib/utils';
 import { detectEditableQuery } from '@/lib/detectEditableQuery';
+import { buildFilteredSelectSql, loadSqlInWorkspace } from '@/lib/openTable';
 
 const STARTER_SQL = `-- Cmd/Ctrl + Enter to run
 SELECT now(), version();
@@ -74,6 +77,7 @@ type BottomTab = 'results' | 'plan';
 export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   const { id } = use(props.params);
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
+  const router = useRouter();
   const editorRef = useRef<SqlEditorHandle>(null);
   const recordHistory = useQueryHistory((s) => s.record);
   const loadSchema = useSchemaCache((s) => s.load);
@@ -204,13 +208,33 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
   // read-only because we can't safely map cells back to a single row.
   const editable = (() => {
     if (state.kind !== 'ok' || !schema || !profile) return undefined;
-    return (
-      detectEditableQuery(state.sql, schema, profile, () => {
-        // Re-run the same SQL after an insert / delete so the grid reflects
-        // what's actually in the DB (esp. auto-generated PKs after INSERT).
-        void onRun(state.sql);
-      }) ?? undefined
-    );
+    const cfg = detectEditableQuery(state.sql, schema, profile, () => {
+      // Re-run the same SQL after an insert / delete so the grid reflects
+      // what's actually in the DB (esp. auto-generated PKs after INSERT).
+      void onRun(state.sql);
+    });
+    if (!cfg) return undefined;
+    return {
+      ...cfg,
+      onNavigateFk: (target: {
+        schema: string;
+        table: string;
+        column: string;
+        value: unknown;
+      }) => {
+        // Build a filtered SELECT against the referenced table and open
+        // it in a fresh tab — auto-runs so the user sees the related rows
+        // immediately without an extra click.
+        const sql = buildFilteredSelectSql(
+          profile.engine,
+          target.schema,
+          target.table,
+          target.column,
+          target.value,
+        );
+        loadSqlInWorkspace(router, profile, sql, true);
+      },
+    };
   })();
 
   // ---- run --------------------------------------------------------------
@@ -303,6 +327,36 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
     }
   };
 
+  const [reconnecting, setReconnecting] = useState(false);
+
+  /** Drop the cached pool + SSH tunnel for this connection, then reopen
+   *  by re-running the active tab. Used when the user hits a stale-
+   *  connection EOF or wants a clean slate after a network change.
+   *  Mirrors the Reconnect button on the schema page so the action is
+   *  available from wherever the user is working. */
+  const onReconnect = async () => {
+    if (!profile) return;
+    setReconnecting(true);
+    try {
+      await api.reconnect(profile);
+    } catch {
+      // disconnect errors are non-fatal — we still want to re-run.
+    } finally {
+      setReconnecting(false);
+    }
+    // If the active tab has any SQL, re-run it now that the pool is
+    // fresh. Empty tabs just stay where they are.
+    const tabId = useSqlTabs.getState().byConnection[profile.id]?.activeId;
+    const sql = tabId
+      ? useSqlTabs
+          .getState()
+          .byConnection[profile.id]?.tabs.find((t) => t.id === tabId)?.sql
+      : undefined;
+    if (sql?.trim()) {
+      void onRun(sql);
+    }
+  };
+
   /** Signal the server to abort the active tab's running query. The Run
    *  promise will reject with `query_cancelled` when the engine
    *  acknowledges; we don't optimistically clear the running state here
@@ -343,6 +397,20 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void onReconnect()}
+              disabled={reconnecting || state.kind === 'running'}
+              title="Drop the pool + SSH tunnel and rerun"
+            >
+              {reconnecting ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Plug className="h-3 w-3" />
+              )}
+              Reconnect
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -569,7 +637,7 @@ function TabBar({
 }) {
   return (
     <div className="flex shrink-0 items-center gap-0.5 border-b bg-muted/30 px-2">
-      <div className="scrollbar-hidden flex flex-1 overflow-x-auto">
+      <div className="scrollbar-thin flex flex-1 overflow-x-auto">
         {tabs.map((tab, i) => {
           const active = tab.id === activeId;
           return (

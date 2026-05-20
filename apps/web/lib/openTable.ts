@@ -42,6 +42,46 @@ export function buildSelectStarSql(
   return `SELECT * FROM ${s}.${t} LIMIT ${limit};`;
 }
 
+/** `SELECT * FROM <table> WHERE <column> = <literal> LIMIT N` — used by
+ *  the FK jump affordance in the result grid. The literal is inlined as
+ *  a SQL literal (numbers as-is, strings single-quoted with `''` escape,
+ *  booleans/null as keywords) rather than bound — the value comes from
+ *  cell data the user is already looking at, and the generated SQL ends
+ *  up in the editor where the user can review or edit it before re-run.
+ *  Mixing binds + literal display would be more work for no real safety
+ *  gain (the literal goes straight to their engine, same as if they
+ *  typed it themselves). */
+export function buildFilteredSelectSql(
+  engine: ConnectionProfile['engine'],
+  schema: string,
+  table: string,
+  column: string,
+  value: unknown,
+  limit: number = DEFAULT_ROW_LIMIT,
+): string {
+  const style = quoteStyleForEngine(engine);
+  const t = softQuoteIdent(table, style);
+  const c = softQuoteIdent(column, style);
+  const tableRef =
+    engine === 'sqlite' || !schema
+      ? t
+      : `${softQuoteIdent(schema, style)}.${t}`;
+  return `SELECT * FROM ${tableRef} WHERE ${c} = ${sqlLiteral(value)} LIMIT ${limit};`;
+}
+
+/** Render a JS value as a SQL literal for inlining into a WHERE clause.
+ *  Strings get single-quote escaping. Numbers/booleans/null map to their
+ *  SQL keywords. Anything else is JSON-stringified and wrapped — works
+ *  for jsonb FKs (rare) and surfaces oddities visibly in the generated
+ *  SQL so the user can fix them by hand. */
+function sqlLiteral(value: unknown): string {
+  if (value === null || value === undefined) return 'NULL';
+  if (typeof value === 'number') return Number.isFinite(value) ? String(value) : 'NULL';
+  if (typeof value === 'boolean') return value ? 'TRUE' : 'FALSE';
+  if (typeof value === 'string') return `'${value.replace(/'/g, "''")}'`;
+  return `'${JSON.stringify(value).replace(/'/g, "''")}'`;
+}
+
 /** Open the table in the connection's SQL workspace. Builds the SELECT,
  *  hands it to the workspace via the shared palette-load channel, and
  *  navigates (no-op if already on /sql). */

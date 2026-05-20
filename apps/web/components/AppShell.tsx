@@ -382,7 +382,7 @@ function TableNav({
               spellCheck={false}
             />
           </div>
-          <ul className="scrollbar-hidden max-h-[44vh] space-y-0 overflow-y-auto px-1 pt-1">
+          <ul className="scrollbar-thin max-h-[44vh] space-y-0 overflow-y-auto px-1 pt-1">
             {filtered.length === 0 ? (
               <li className="px-1.5 py-1 text-[10px] text-muted-foreground">
                 No matches.

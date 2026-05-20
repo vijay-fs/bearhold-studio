@@ -64,6 +64,7 @@ export function detectEditableQuery(
     table: match.table.name,
     pkColumns,
     tableColumns: match.table.columns,
+    foreignKeys: match.table.foreign_keys ?? [],
     onChanged,
   };
 }

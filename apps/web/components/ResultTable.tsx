@@ -14,7 +14,11 @@ import {
 } from 'ag-grid-community';
 import {
   AlertCircle,
+  ArrowUpRight,
+  Braces,
   Check,
+  ChevronDown,
+  ChevronRight,
   Download,
   FilterX,
   Loader2,
@@ -33,6 +37,7 @@ import type {
   RowInsert,
 } from '@/lib/types';
 import { exportAs, type ExportFormat } from '@/lib/exporters';
+import { cn } from '@/lib/utils';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -43,7 +48,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
-import type { Column as SchemaColumn } from '@dbstudio/erd';
+import type { Column as SchemaColumn, ForeignKey } from '@dbstudio/erd';
 
 // AG Grid v33+ requires explicit module registration — without this the
 // grid mounts as an empty shell. Registering the full community bundle is
@@ -89,9 +94,23 @@ export interface EditableConfig {
   /** Column metadata from the introspected schema. Required to render the
    *  Insert form with type hints and to skip auto-default columns. */
   tableColumns: SchemaColumn[];
+  /** FKs declared on this table. Drives the per-cell "jump to referenced
+   *  row" affordance in the result grid. Composite FKs are kept here
+   *  intact but the in-cell jump only fires for single-column FKs (the
+   *  ~95% case); the multi-column case would need a richer UI. */
+  foreignKeys: ForeignKey[];
   /** Called after a successful insert or delete so the parent can refetch.
    *  Cell updates patch the grid row directly and don't need a refresh. */
   onChanged?: () => void;
+  /** Called when the user clicks a FK cell's jump button. Opens the
+   *  referenced table in a new SQL tab filtered by the FK value. Wired
+   *  by the SQL workspace where the router is in scope. */
+  onNavigateFk?: (target: {
+    schema: string;
+    table: string;
+    column: string;
+    value: unknown;
+  }) => void;
 }
 
 /** A single pending cell edit, identified by (rowId, column). The
@@ -218,6 +237,28 @@ export function ResultTable({
     return editable.pkColumns.every((c) => result.columns.some((rc) => rc.name === c));
   }, [editable, result.columns]);
 
+  /** Map of local-column-name → referenced (schema, table, column), derived
+   *  from `editable.foreignKeys`. Drives the in-cell jump affordance.
+   *  Composite FKs are omitted — single-column is the ~95% case and the
+   *  multi-column case needs a richer UI than a one-click button. */
+  const fkTargetsByColumn = useMemo(() => {
+    const m = new Map<
+      string,
+      { schema: string; table: string; column: string }
+    >();
+    if (!editable) return m;
+    for (const fk of editable.foreignKeys) {
+      if (fk.columns.length === 1 && fk.references_columns.length === 1) {
+        m.set(fk.columns[0]!, {
+          schema: fk.references_schema,
+          table: fk.references_table,
+          column: fk.references_columns[0]!,
+        });
+      }
+    }
+    return m;
+  }, [editable]);
+
   // ---- Convert array-of-arrays rows into AG Grid's row objects ----------
   // AG Grid wants row objects keyed by column name. We attach a stable
   // `__id` so it can track rows across edits/deletes without losing state.
@@ -240,6 +281,24 @@ export function ResultTable({
   const [deleteTarget, setDeleteTarget] = useState<Record<string, unknown> | null>(null);
   const [deleteApplying, setDeleteApplying] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  /** Bulk-delete state. The user picks N rows via the grid's checkbox
+   *  column, clicks "Delete N rows", reviews the generated DELETE
+   *  statements, and confirms. We loop the existing single-row delete
+   *  endpoint — keeps the backend surface tiny at the cost of one round
+   *  trip per row, which is fine for the typical 1-20 rows you'd
+   *  multi-select interactively. */
+  const [selectedRows, setSelectedRows] = useState<Record<string, unknown>[]>([]);
+  const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
+  const [bulkDeleteApplying, setBulkDeleteApplying] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+
+  /** When set, the JSON viewer dialog is open and showing this cell's
+   *  parsed value as a collapsible tree. Driven by the per-cell expand
+   *  button on json/jsonb columns. */
+  const [jsonView, setJsonView] = useState<
+    { column: string; value: unknown } | null
+  >(null);
 
   // ---- Pending-changes model --------------------------------------------
   // Edits accumulate in `pendingEditsRef` until the user clicks Apply.
@@ -484,6 +543,59 @@ export function ResultTable({
     }
   };
 
+  /** Loop the single-row delete endpoint for every selected row. Stops at
+   *  the first failure (the rest stay selected so the user can see what
+   *  succeeded vs what didn't). Successful rows are spliced from the grid
+   *  as they complete so progress is visible. */
+  const applyBulkDelete = async () => {
+    if (!editable || selectedRows.length === 0) return;
+    setBulkDeleteError(null);
+    setBulkDeleteApplying(true);
+    const succeeded: Record<string, unknown>[] = [];
+    try {
+      for (const row of selectedRows) {
+        const pk: Array<[string, unknown]> = editable.pkColumns.map((col) => [
+          col,
+          row[col],
+        ]);
+        const affected = await api.deleteRow(editable.profile, {
+          schema: editable.schema,
+          table: editable.table,
+          pk,
+        });
+        if (affected !== 1) {
+          throw {
+            code: 'unexpected_rows',
+            message: `Expected 1 row affected, got ${affected}.`,
+          };
+        }
+        succeeded.push(row);
+        gridApiRef.current?.applyTransaction({ remove: [row] });
+      }
+      setDisplayedCount((c) => Math.max(0, c - succeeded.length));
+      setSelectedRows([]);
+      setBulkDeleteOpen(false);
+      editable.onChanged?.();
+    } catch (e: unknown) {
+      const err = e as { code?: string; message?: string };
+      const msg = `${err.code ?? 'unknown'} · ${err.message ?? String(e)}`;
+      setBulkDeleteError(
+        succeeded.length > 0
+          ? `${succeeded.length}/${selectedRows.length} succeeded before failure. ${msg}`
+          : msg,
+      );
+      // Splice already-deleted rows out of the in-memory selection so a
+      // retry doesn't re-issue them.
+      if (succeeded.length > 0) {
+        const remaining = selectedRows.filter((r) => !succeeded.includes(r));
+        setSelectedRows(remaining);
+        setDisplayedCount((c) => Math.max(0, c - succeeded.length));
+      }
+    } finally {
+      setBulkDeleteApplying(false);
+    }
+  };
+
   // ---- Export ----------------------------------------------------------
   // We export the post-filter / post-sort view by walking AG Grid's
   // displayed nodes, then hand the rows to our existing exporters so JSON
@@ -511,6 +623,24 @@ export function ResultTable({
       const isPk = pkColumnNames.has(c.name);
       const numeric = isNumericType(c.data_type);
       const bool = isBoolType(c.data_type);
+      const fkTarget = fkTargetsByColumn.get(c.name);
+      const json = isJsonType(c.data_type);
+      // JSON columns get a viewer button; FK columns get a jump button.
+      // A single column rarely both — but if it did, FK wins because
+      // the value is just a scalar key, not a real JSON payload.
+      const cellRenderer = fkTarget
+        ? FkCellRenderer
+        : json
+          ? JsonCellRenderer
+          : undefined;
+      const cellRendererParams = fkTarget
+        ? { fkTarget, onNavigate: editable?.onNavigateFk }
+        : json
+          ? {
+              onView: (value: unknown) =>
+                setJsonView({ column: c.name, value: parseJsonCell(value) }),
+            }
+          : undefined;
       return {
         field: c.name,
         headerName: c.name,
@@ -528,6 +658,8 @@ export function ResultTable({
         cellEditorParams: numeric
           ? { precision: isIntegerType(c.data_type) ? 0 : undefined }
           : undefined,
+        cellRenderer,
+        cellRendererParams,
         // valueGetter consults pendingEditsRef before falling back to row
         // data. This is what makes pending edits "stick" — even if AG Grid
         // re-pulls from the rowData prop on an unrelated re-render, the
@@ -574,7 +706,14 @@ export function ResultTable({
       });
     }
     return defs;
-  }, [result.columns, pkColumnNames, editable, editableReady, openDelete]);
+  }, [
+    result.columns,
+    pkColumnNames,
+    editable,
+    editableReady,
+    openDelete,
+    fkTargetsByColumn,
+  ]);
 
   const defaultColDef = useMemo<ColDef>(
     () => ({
@@ -651,6 +790,20 @@ export function ResultTable({
             >
               <FilterX className="h-3 w-3" />
               Clear
+            </button>
+          )}
+          {editable && editableReady && selectedRows.length > 0 && (
+            <button
+              type="button"
+              onClick={() => {
+                setBulkDeleteError(null);
+                setBulkDeleteOpen(true);
+              }}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-destructive hover:bg-destructive/10"
+              title={`Delete ${selectedRows.length} selected row${selectedRows.length === 1 ? '' : 's'}`}
+            >
+              <Trash2 className="h-3 w-3" />
+              Delete {selectedRows.length}
             </button>
           )}
           {editable && editableReady && (
@@ -755,6 +908,26 @@ export function ResultTable({
             quickFilterText={quickFilter}
             onCellValueChanged={onCellValueChanged}
             onFilterChanged={onFilterChanged}
+            // Multi-row selection with a checkbox column — only on
+            // editable result sets, otherwise there's nothing useful the
+            // user can do with the selection. `headerCheckbox: true`
+            // gives a "select all on this page" toggle.
+            rowSelection={
+              editable && editableReady
+                ? {
+                    mode: 'multiRow',
+                    checkboxes: true,
+                    headerCheckbox: true,
+                    enableClickSelection: false,
+                  }
+                : undefined
+            }
+            onSelectionChanged={(e) => {
+              const rows = e.api
+                .getSelectedRows()
+                .map((r) => r as Record<string, unknown>);
+              setSelectedRows(rows);
+            }}
             stopEditingWhenCellsLoseFocus
             // Double-click opens the editor (or F2 / Enter on a focused cell).
             // Single-click edit is too easy to trigger accidentally.
@@ -953,6 +1126,331 @@ export function ResultTable({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* JSON cell viewer — expandable tree view of the parsed value. */}
+      <Dialog open={jsonView != null} onOpenChange={(o) => !o && setJsonView(null)}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle className="font-mono text-sm">
+              {jsonView?.column}
+            </DialogTitle>
+            <DialogDescription>
+              JSON value · click any{' '}
+              <ChevronRight className="inline h-3 w-3" /> to collapse a
+              branch.
+            </DialogDescription>
+          </DialogHeader>
+          {jsonView && (
+            <div className="scrollbar-hidden max-h-[60vh] overflow-y-auto rounded border bg-muted/30 p-3 font-mono text-xs">
+              <JsonTreeNode value={jsonView.value} depth={0} initiallyOpen />
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                if (!jsonView) return;
+                void navigator.clipboard.writeText(
+                  JSON.stringify(jsonView.value, null, 2),
+                );
+              }}
+            >
+              Copy as JSON
+            </Button>
+            <Button size="sm" onClick={() => setJsonView(null)}>
+              Close
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Bulk delete preview — shows every DELETE statement that will
+          run, then loops the single-row endpoint on apply. */}
+      <Dialog
+        open={bulkDeleteOpen}
+        onOpenChange={(o) => !o && !bulkDeleteApplying && setBulkDeleteOpen(false)}
+      >
+        <DialogContent className="max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>
+              Delete {selectedRows.length} row{selectedRows.length === 1 ? '' : 's'}?
+            </DialogTitle>
+            <DialogDescription>
+              Each statement runs sequentially against the live database. If
+              one fails the rest are skipped; rows already deleted stay
+              gone. This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {editable && selectedRows.length > 0 && (
+            <div className="max-h-[420px] space-y-2 overflow-y-auto">
+              {selectedRows.map((row, i) => (
+                <pre
+                  key={i}
+                  className="overflow-x-auto rounded border bg-muted/40 p-3 text-[11px] leading-relaxed"
+                >
+                  {deletePreviewSql(editable, row)}
+                </pre>
+              ))}
+              {bulkDeleteError && (
+                <p className="text-xs text-destructive">{bulkDeleteError}</p>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setBulkDeleteOpen(false)}
+              disabled={bulkDeleteApplying}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={applyBulkDelete}
+              disabled={bulkDeleteApplying || selectedRows.length === 0}
+            >
+              {bulkDeleteApplying ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Trash2 className="h-3.5 w-3.5" />
+              )}
+              Delete {selectedRows.length} row
+              {selectedRows.length === 1 ? '' : 's'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+// ---- Cell renderer for FK columns ---------------------------------------
+
+/** Renders an FK column value with a hover-revealed jump button. Clicking
+ *  the button asks the parent to open the referenced table filtered by
+ *  this row's FK value — the typical "what does this foreign-key point at"
+ *  workflow without leaving the workspace. NULL values render plainly
+ *  with no jump button (nothing meaningful to jump to). */
+function FkCellRenderer(
+  params: ICellRendererParams & {
+    fkTarget: { schema: string; table: string; column: string };
+    onNavigate?: (target: {
+      schema: string;
+      table: string;
+      column: string;
+      value: unknown;
+    }) => void;
+  },
+) {
+  const value = params.value;
+  const display = params.valueFormatted ?? renderCell(value);
+  const hasValue = value !== null && value !== undefined && value !== '';
+  return (
+    <div className="group flex h-full items-center gap-1">
+      <span
+        className={cn(
+          'flex-1 truncate',
+          value === null && 'italic text-muted-foreground',
+        )}
+      >
+        {display}
+      </span>
+      {hasValue && params.onNavigate && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            params.onNavigate?.({ ...params.fkTarget, value });
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+          title={`Open ${params.fkTarget.schema}.${params.fkTarget.table} where ${params.fkTarget.column} = ${display}`}
+          aria-label="Jump to referenced row"
+        >
+          <ArrowUpRight className="h-3 w-3" />
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---- JSON tree viewer ---------------------------------------------------
+
+/** Recursive collapsible tree node for the JSON viewer. Objects and
+ *  arrays expand to show their children; primitives render inline with a
+ *  type-appropriate color. Always renders without external deps so we
+ *  don't pull in a 30KB JSON-tree library for a tiny dialog. */
+function JsonTreeNode({
+  value,
+  keyName,
+  depth,
+  initiallyOpen,
+}: {
+  value: unknown;
+  keyName?: string | number;
+  depth: number;
+  initiallyOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(initiallyOpen ?? depth < 2);
+
+  const renderKey = () =>
+    keyName !== undefined ? (
+      <span className="text-foreground/80">
+        {typeof keyName === 'number' ? keyName : `"${keyName}"`}
+        <span className="text-muted-foreground">:</span>{' '}
+      </span>
+    ) : null;
+
+  if (value === null) {
+    return (
+      <div className="leading-relaxed">
+        {renderKey()}
+        <span className="text-muted-foreground">null</span>
+      </div>
+    );
+  }
+  if (typeof value === 'boolean') {
+    return (
+      <div className="leading-relaxed">
+        {renderKey()}
+        <span className="text-sky-600 dark:text-sky-400">{String(value)}</span>
+      </div>
+    );
+  }
+  if (typeof value === 'number') {
+    return (
+      <div className="leading-relaxed">
+        {renderKey()}
+        <span className="text-amber-600 dark:text-amber-400">{value}</span>
+      </div>
+    );
+  }
+  if (typeof value === 'string') {
+    return (
+      <div className="leading-relaxed">
+        {renderKey()}
+        <span className="break-all text-emerald-700 dark:text-emerald-400">
+          &quot;{value}&quot;
+        </span>
+      </div>
+    );
+  }
+  if (Array.isArray(value)) {
+    const empty = value.length === 0;
+    return (
+      <div>
+        <button
+          type="button"
+          onClick={() => !empty && setOpen((v) => !v)}
+          className="flex items-center gap-1 leading-relaxed hover:text-foreground"
+        >
+          {!empty ? (
+            open ? (
+              <ChevronDown className="h-3 w-3 shrink-0" />
+            ) : (
+              <ChevronRight className="h-3 w-3 shrink-0" />
+            )
+          ) : (
+            <span className="w-3" />
+          )}
+          {renderKey()}
+          <span className="text-muted-foreground">
+            [{value.length} item{value.length === 1 ? '' : 's'}]
+          </span>
+        </button>
+        {open && !empty && (
+          <div className="ml-3 border-l border-border/60 pl-3">
+            {value.map((v, i) => (
+              <JsonTreeNode key={i} value={v} keyName={i} depth={depth + 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const empty = entries.length === 0;
+    return (
+      <div>
+        <button
+          type="button"
+          onClick={() => !empty && setOpen((v) => !v)}
+          className="flex items-center gap-1 leading-relaxed hover:text-foreground"
+        >
+          {!empty ? (
+            open ? (
+              <ChevronDown className="h-3 w-3 shrink-0" />
+            ) : (
+              <ChevronRight className="h-3 w-3 shrink-0" />
+            )
+          ) : (
+            <span className="w-3" />
+          )}
+          {renderKey()}
+          <span className="text-muted-foreground">
+            {`{${entries.length} key${entries.length === 1 ? '' : 's'}}`}
+          </span>
+        </button>
+        {open && !empty && (
+          <div className="ml-3 border-l border-border/60 pl-3">
+            {entries.map(([k, v]) => (
+              <JsonTreeNode key={k} value={v} keyName={k} depth={depth + 1} />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Fallback for anything exotic (functions, symbols) — shouldn't happen
+  // for JSON payloads but render gracefully.
+  return (
+    <div className="leading-relaxed">
+      {renderKey()}
+      <span className="text-muted-foreground">{String(value)}</span>
+    </div>
+  );
+}
+
+// ---- Cell renderer for JSON / JSONB columns ----------------------------
+
+/** Renders a JSON cell with its stringified preview + a hover-revealed
+ *  expand button. Click → opens a collapsible tree dialog. Avoids
+ *  reflowing the cell when the JSON is huge; the user always sees a
+ *  truncated single-line preview, and reaches for the dialog only when
+ *  they want detail. */
+function JsonCellRenderer(
+  params: ICellRendererParams & { onView: (value: unknown) => void },
+) {
+  const value = params.value;
+  const display = params.valueFormatted ?? renderCell(value);
+  const hasValue = value !== null && value !== undefined && value !== '';
+  return (
+    <div className="group flex h-full items-center gap-1">
+      <span
+        className={cn(
+          'flex-1 truncate',
+          value === null && 'italic text-muted-foreground',
+        )}
+      >
+        {display}
+      </span>
+      {hasValue && (
+        <button
+          type="button"
+          onClick={(e) => {
+            e.stopPropagation();
+            params.onView(value);
+          }}
+          onDoubleClick={(e) => e.stopPropagation()}
+          className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
+          title="Expand JSON value"
+          aria-label="Expand JSON value"
+        >
+          <Braces className="h-3 w-3" />
+        </button>
+      )}
     </div>
   );
 }
@@ -1241,6 +1739,24 @@ function isIntegerType(t: string): boolean {
 
 function isBoolType(t: string): boolean {
   return /(bool)/.test(t.toLowerCase());
+}
+
+function isJsonType(t: string): boolean {
+  return /json/.test(t.toLowerCase());
+}
+
+/** Parse a JSON cell into a JS value. The backend may return jsonb as
+ *  either an already-decoded object/array or as a JSON string depending
+ *  on the driver path. Tolerates both, and returns the original value
+ *  unmodified if parsing fails. */
+function parseJsonCell(value: unknown): unknown {
+  if (value === null || value === undefined) return null;
+  if (typeof value !== 'string') return value;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return value;
+  }
 }
 
 /**

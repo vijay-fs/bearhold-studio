@@ -78,11 +78,35 @@
 
 @layer utilities {
   /* Hide the native scrollbar entirely. Content still scrolls via wheel,
-     trackpad, keyboard, and touch — only the visual chrome is gone.
-     `scrollbar-width: none` is the CSS Scrollbars Module standard and
-     is honored by every modern Tauri webview (recent WebKit / WebView2 /
-     WebKitGTK), so no `::-webkit-scrollbar` fallback is needed. */
+     trackpad, keyboard, and touch — only the visual chrome is gone. */
   .scrollbar-hidden {
     scrollbar-width: none;
+  }
+
+  /* Thin, subtle scrollbar — used where the user needs a visible
+     affordance because the area scrolls frequently (query tab strip,
+     sidebar table list). Stays out of the way until interacted with.
+     `scrollbar-color` is the Firefox/standards path; the webkit pair
+     keeps Tauri's WebKit / WebView2 builds in sync. */
+  .scrollbar-thin {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.4) transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar {
+    height: 6px;
+    width: 6px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb {
+    background-color: hsl(var(--muted-foreground) / 0.35);
+    border-radius: 3px;
+  }
+  .scrollbar-thin::-webkit-scrollbar-thumb:hover {
+    background-color: hsl(var(--muted-foreground) / 0.6);
+  }
+  .scrollbar-thin::-webkit-scrollbar-corner {
+    background: transparent;
   }
 }
