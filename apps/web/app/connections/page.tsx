@@ -1,15 +1,18 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
-import { Database, Plus } from 'lucide-react';
+import { Database, Plus, FileInput } from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
+import { ImportConnectionsDialog } from '@/components/ImportConnectionsDialog';
 import { useConnections } from '@/store/connections';
 import { ENGINE_LABELS } from '@/lib/types';
 
 export default function ConnectionsPage() {
   const profiles = useConnections((s) => s.profiles);
+  const [importOpen, setImportOpen] = useState(false);
 
   return (
     <AppShell>
@@ -21,12 +24,18 @@ export default function ConnectionsPage() {
               {profiles.length} saved on this device.
             </p>
           </div>
-          <Button asChild>
-            <Link href="/connections/new">
-              <Plus className="h-4 w-4" />
-              Add connection
-            </Link>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" onClick={() => setImportOpen(true)}>
+              <FileInput className="h-4 w-4" />
+              Import
+            </Button>
+            <Button asChild>
+              <Link href="/connections/new">
+                <Plus className="h-4 w-4" />
+                Add connection
+              </Link>
+            </Button>
+          </div>
         </header>
 
         {profiles.length === 0 ? (
@@ -62,6 +71,8 @@ export default function ConnectionsPage() {
           </ul>
         )}
       </div>
+
+      <ImportConnectionsDialog open={importOpen} onOpenChange={setImportOpen} />
     </AppShell>
   );
 }

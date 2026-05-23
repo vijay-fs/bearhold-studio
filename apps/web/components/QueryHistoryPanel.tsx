@@ -15,21 +15,43 @@ interface Props {
   onRerun: (sql: string) => void;
 }
 
+type StatusFilter = 'all' | 'ok' | 'error';
+type RangeFilter = 'all' | '1h' | '24h' | '7d';
+
+const RANGE_MS: Record<RangeFilter, number | null> = {
+  all: null,
+  '1h': 60 * 60 * 1000,
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+};
+
 export function QueryHistoryPanel({ connectionId, onLoad, onRerun }: Props) {
   const allEntries = useQueryHistory((s) => s.entries);
   const remove = useQueryHistory((s) => s.remove);
   const clear = useQueryHistory((s) => s.clear);
 
   const [filter, setFilter] = useState('');
+  const [status, setStatus] = useState<StatusFilter>('all');
+  const [range, setRange] = useState<RangeFilter>('all');
+
+  const forConn = useMemo(
+    () => allEntries.filter((e) => e.connectionId === connectionId),
+    [allEntries, connectionId],
+  );
 
   const entries = useMemo(() => {
-    const forConn = allEntries.filter((e) => e.connectionId === connectionId);
-    if (!filter.trim()) return forConn;
-    const needle = filter.toLowerCase();
-    return forConn.filter((e) => e.sql.toLowerCase().includes(needle));
-  }, [allEntries, connectionId, filter]);
+    const rangeMs = RANGE_MS[range];
+    const cutoff = rangeMs != null ? Date.now() - rangeMs : null;
+    const needle = filter.trim().toLowerCase();
+    return forConn.filter((e) => {
+      if (status !== 'all' && e.status !== status) return false;
+      if (cutoff != null && e.timestamp < cutoff) return false;
+      if (needle && !e.sql.toLowerCase().includes(needle)) return false;
+      return true;
+    });
+  }, [forConn, filter, status, range]);
 
-  if (allEntries.filter((e) => e.connectionId === connectionId).length === 0) {
+  if (forConn.length === 0) {
     return (
       <div className="flex h-full items-center justify-center px-6 text-center">
         <p className="text-xs text-muted-foreground">
@@ -42,8 +64,8 @@ export function QueryHistoryPanel({ connectionId, onLoad, onRerun }: Props) {
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5">
-        <div className="relative flex-1">
+      <div className="flex flex-wrap items-center gap-2 border-b px-3 py-1.5">
+        <div className="relative flex-1 min-w-[180px]">
           <Search className="absolute left-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={filter}
@@ -52,6 +74,25 @@ export function QueryHistoryPanel({ connectionId, onLoad, onRerun }: Props) {
             className="h-7 pl-7 text-xs"
           />
         </div>
+        <FilterChip
+          value={status}
+          onChange={(v) => setStatus(v as StatusFilter)}
+          options={[
+            { value: 'all', label: 'All' },
+            { value: 'ok', label: 'Success' },
+            { value: 'error', label: 'Errors' },
+          ]}
+        />
+        <FilterChip
+          value={range}
+          onChange={(v) => setRange(v as RangeFilter)}
+          options={[
+            { value: 'all', label: 'All time' },
+            { value: '1h', label: 'Past hour' },
+            { value: '24h', label: 'Past 24h' },
+            { value: '7d', label: 'Past week' },
+          ]}
+        />
         <Button
           variant="ghost"
           size="sm"
@@ -182,6 +223,33 @@ function IconBtn({
     >
       {children}
     </button>
+  );
+}
+
+/** Tiny native <select> styled to match the toolbar input. Renders as a
+ *  segmented-control-looking chip so the row stays compact and the
+ *  current value is always visible. */
+function FilterChip({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+  options: Array<{ value: string; label: string }>;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      className="h-7 rounded border border-input bg-background px-2 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+    >
+      {options.map((o) => (
+        <option key={o.value} value={o.value}>
+          {o.label}
+        </option>
+      ))}
+    </select>
   );
 }
 

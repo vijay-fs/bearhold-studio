@@ -7,12 +7,25 @@
 // The ER node intentionally renders only a compact summary so it fits in a
 // ~280px box; everything that doesn't fit in that summary belongs here.
 
+import { useState } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
-import { X, KeyRound, Link2, ArrowRightFromLine, ArrowLeftToLine, Table2 } from 'lucide-react';
+import {
+  X,
+  KeyRound,
+  Link2,
+  ArrowRightFromLine,
+  ArrowLeftToLine,
+  Table2,
+  Plus,
+  Pencil,
+  Trash2,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import type { Schema, Table, ForeignKey } from '@dbstudio/erd';
+import type { ConnectionProfile } from '@/lib/types';
+import { DdlDialog, type DdlMode } from '@/components/DdlDialog';
 
 interface TableDetailsDrawerProps {
   schema: Schema;
@@ -23,6 +36,14 @@ interface TableDetailsDrawerProps {
   /** "Open in SQL workspace" action from the drawer footer — wired by the
    *  parent so the drawer doesn't need to know about routing. */
   onOpenInSql?: (schema: string, table: string) => void;
+  /** Connection profile, threaded through so the DDL dialogs can run
+   *  ALTER TABLE statements without the drawer having to import the
+   *  whole api surface. When omitted, the per-column edit/drop and the
+   *  Add Column action are hidden. */
+  profile?: ConnectionProfile;
+  /** Fires after a successful DDL apply so the parent can invalidate
+   *  the schema cache and refetch. */
+  onSchemaChange?: () => void;
 }
 
 export function TableDetailsDrawer({
@@ -30,10 +51,16 @@ export function TableDetailsDrawer({
   selection,
   onClose,
   onOpenInSql,
+  profile,
+  onSchemaChange,
 }: TableDetailsDrawerProps) {
   const open = selection != null;
   const table = open ? findTable(schema, selection.schema, selection.table) : null;
   const incoming = open && table ? collectIncoming(schema, table) : [];
+
+  /** Active DDL operation. Setting this opens the DdlDialog in the
+   *  matching mode. Cleared when the dialog closes (cancel or apply). */
+  const [ddl, setDdl] = useState<DdlMode | null>(null);
 
   return (
     <DialogPrimitive.Root open={open} onOpenChange={(o) => !o && onClose()}>
@@ -77,7 +104,29 @@ export function TableDetailsDrawer({
               </header>
 
               <div className="scrollbar-hidden flex-1 overflow-y-auto px-4 py-3">
-                <Columns table={table} />
+                <Columns
+                  table={table}
+                  editable={Boolean(profile)}
+                  onAdd={() =>
+                    setDdl({ kind: 'add', schema: table.schema, table: table.name })
+                  }
+                  onRename={(col) =>
+                    setDdl({
+                      kind: 'rename',
+                      schema: table.schema,
+                      table: table.name,
+                      column: col,
+                    })
+                  }
+                  onDrop={(col) =>
+                    setDdl({
+                      kind: 'drop',
+                      schema: table.schema,
+                      table: table.name,
+                      column: col,
+                    })
+                  }
+                />
                 <PrimaryKeyBlock table={table} />
                 <ForeignKeysBlock fks={table.foreign_keys} />
                 <IncomingRefsBlock refs={incoming} />
@@ -108,6 +157,18 @@ export function TableDetailsDrawer({
           )}
         </DialogPrimitive.Content>
       </DialogPrimitive.Portal>
+
+      {profile && (
+        <DdlDialog
+          profile={profile}
+          mode={ddl}
+          onClose={() => setDdl(null)}
+          onChanged={() => {
+            setDdl(null);
+            onSchemaChange?.();
+          }}
+        />
+      )}
     </DialogPrimitive.Root>
   );
 }
@@ -122,17 +183,45 @@ function SectionHeader({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Columns({ table }: { table: Table }) {
+function Columns({
+  table,
+  editable,
+  onAdd,
+  onRename,
+  onDrop,
+}: {
+  table: Table;
+  editable: boolean;
+  onAdd: () => void;
+  onRename: (column: string) => void;
+  onDrop: (column: string) => void;
+}) {
   const pkSet = new Set(table.primary_key?.columns ?? []);
   const fkSet = new Set<string>();
   for (const fk of table.foreign_keys) for (const c of fk.columns) fkSet.add(c);
 
   return (
     <section>
-      <SectionHeader>Columns ({table.columns.length})</SectionHeader>
+      <div className="mb-1.5 mt-4 flex items-center justify-between first:mt-0">
+        <SectionHeader>Columns ({table.columns.length})</SectionHeader>
+        {editable && (
+          <button
+            type="button"
+            onClick={onAdd}
+            className="-mt-1 inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+            title="Add a new column"
+          >
+            <Plus className="h-3 w-3" />
+            Add column
+          </button>
+        )}
+      </div>
       <ul className="divide-y rounded border">
         {table.columns.map((col) => (
-          <li key={col.name} className="flex flex-col gap-0.5 px-2.5 py-1.5">
+          <li
+            key={col.name}
+            className="group flex flex-col gap-0.5 px-2.5 py-1.5"
+          >
             <div className="flex items-center gap-1.5">
               {pkSet.has(col.name) ? (
                 <KeyRound
@@ -158,6 +247,28 @@ function Columns({ table }: { table: Table }) {
               {!col.nullable && (
                 <span className="ml-auto rounded bg-muted px-1 text-[9px] font-medium uppercase tracking-wider text-muted-foreground">
                   not null
+                </span>
+              )}
+              {editable && (
+                <span className="ml-1 flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+                  <button
+                    type="button"
+                    onClick={() => onRename(col.name)}
+                    className="rounded p-0.5 text-muted-foreground hover:bg-background hover:text-foreground"
+                    title="Rename column"
+                    aria-label={`Rename ${col.name}`}
+                  >
+                    <Pencil className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDrop(col.name)}
+                    className="rounded p-0.5 text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                    title="Drop column"
+                    aria-label={`Drop ${col.name}`}
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
                 </span>
               )}
             </div>

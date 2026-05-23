@@ -44,6 +44,7 @@ import type { Schema } from '@dbstudio/erd';
 import { cn } from '@/lib/utils';
 import { detectEditableQuery } from '@/lib/detectEditableQuery';
 import { buildFilteredSelectSql, loadSqlInWorkspace } from '@/lib/openTable';
+import { suggestHint } from '@/lib/errorHints';
 
 const STARTER_SQL = `-- Cmd/Ctrl + Enter to run
 SELECT now(), version();
@@ -565,6 +566,22 @@ export default function SqlPage(props: { params: Promise<{ id: string }> }) {
                         <span className="font-mono">{state.code}</span> ·{' '}
                         {state.message}
                       </p>
+                      {(() => {
+                        const hint = suggestHint(schema, state.code, state.message);
+                        if (!hint) return null;
+                        return (
+                          <p className="mt-2 text-xs text-muted-foreground">
+                            Did you mean{' '}
+                            {hint.suggestions.map((s, i) => (
+                              <span key={s}>
+                                {i > 0 && (i === hint.suggestions.length - 1 ? ' or ' : ', ')}
+                                <code className="font-mono text-foreground">{s}</code>
+                              </span>
+                            ))}
+                            ?
+                          </p>
+                        );
+                      })()}
                     </div>
                   ))}
                 {state.kind === 'ok' && (

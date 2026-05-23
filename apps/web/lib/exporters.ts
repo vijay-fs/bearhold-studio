@@ -1,6 +1,13 @@
 // Result-grid exporters. Convert rows + columns to CSV / JSON / SQL INSERT.
-// Triggered via Blob + temporary `<a download>` so the OS save dialog handles
-// the destination — works the same in Tauri's WKWebView and a real browser.
+//
+// We build the export as an array of small string chunks (one per row,
+// plus header/footer pieces) and hand it to `new Blob([...])` rather
+// than concatenating the whole file into a single JS string first. V8
+// caps individual strings at ~512 MB, and building megabyte-scale
+// strings via `+=` triggers repeated reallocations — the chunked path
+// stays flat-memory regardless of result-set size, so a million-row
+// CSV export works without crashing the renderer. The Blob runtime
+// concatenates internally as it streams the bytes to the file.
 
 import type { ResultColumn } from './types';
 
@@ -22,21 +29,47 @@ function csvField(value: unknown): string {
   return s;
 }
 
-export function toCSV({ columns, rows }: { columns: ResultColumn[]; rows: unknown[][] }): string {
-  const header = columns.map((c) => csvField(c.name)).join(',');
-  const body = rows.map((r) => r.map(csvField).join(',')).join('\n');
-  return `${header}\n${body}\n`;
+/** Chunked CSV writer — emits one string per row so the Blob constructor
+ *  can stream them out without first materializing the whole file as a
+ *  single in-memory string. The string returned for a row already has
+ *  its trailing newline, so the Blob is just `[header, row, row, …]`. */
+function toCSVChunks({
+  columns,
+  rows,
+}: {
+  columns: ResultColumn[];
+  rows: unknown[][];
+}): string[] {
+  const chunks: string[] = [];
+  chunks.push(columns.map((c) => csvField(c.name)).join(',') + '\n');
+  for (const r of rows) {
+    chunks.push(r.map(csvField).join(',') + '\n');
+  }
+  return chunks;
 }
 
-export function toJSON({ columns, rows }: { columns: ResultColumn[]; rows: unknown[][] }): string {
-  const objects = rows.map((r) => {
+/** Chunked JSON-array writer. Format mirrors a `JSON.stringify(arr, null, 2)`
+ *  except we emit each object as its own string chunk, joined by commas
+ *  and newlines. Order matters — `[`, first object, then for each
+ *  subsequent `,\n` + object, finally `\n]`. */
+function toJSONChunks({
+  columns,
+  rows,
+}: {
+  columns: ResultColumn[];
+  rows: unknown[][];
+}): string[] {
+  if (rows.length === 0) return ['[]'];
+  const chunks: string[] = ['[\n'];
+  for (let i = 0; i < rows.length; i++) {
     const obj: Record<string, unknown> = {};
-    columns.forEach((c, i) => {
-      obj[c.name] = r[i];
+    columns.forEach((c, j) => {
+      obj[c.name] = rows[i]![j];
     });
-    return obj;
-  });
-  return JSON.stringify(objects, null, 2);
+    chunks.push((i > 0 ? ',\n' : '') + '  ' + JSON.stringify(obj));
+  }
+  chunks.push('\n]');
+  return chunks;
 }
 
 /** SQL string literal: wrap in single quotes, double up internal ones. */
@@ -56,7 +89,8 @@ function sqlIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
 }
 
-export function toSQL({
+/** Chunked SQL writer — one INSERT statement per chunk. */
+function toSQLChunks({
   columns,
   rows,
   tableName,
@@ -64,18 +98,25 @@ export function toSQL({
   columns: ResultColumn[];
   rows: unknown[][];
   tableName: string;
-}): string {
+}): string[] {
   const cols = columns.map((c) => sqlIdent(c.name)).join(', ');
   const target = sqlIdent(tableName);
-  const lines = rows.map((r) => {
-    const values = r.map(sqlLiteral).join(', ');
-    return `INSERT INTO ${target} (${cols}) VALUES (${values});`;
-  });
-  return lines.join('\n') + '\n';
+  const chunks: string[] = [];
+  for (const r of rows) {
+    chunks.push(`INSERT INTO ${target} (${cols}) VALUES (${r.map(sqlLiteral).join(', ')});\n`);
+  }
+  return chunks;
 }
 
-export function downloadText(filename: string, mime: string, text: string): void {
-  const blob = new Blob([text], { type: mime });
+/** Trigger a download given a Blob's worth of chunks. The OS save
+ *  dialog handles the destination — works in Tauri's WKWebView and a
+ *  real browser without needing any extra permissions. */
+export function downloadChunks(
+  filename: string,
+  mime: string,
+  chunks: string[],
+): void {
+  const blob = new Blob(chunks, { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
@@ -92,10 +133,18 @@ export function exportAs(format: ExportFormat, input: ExportInput): void {
   const base = input.baseName.replace(/[^\w.-]+/g, '_') || 'export';
   switch (format) {
     case 'csv':
-      downloadText(`${base}-${stamp}.csv`, 'text/csv;charset=utf-8', toCSV(input));
+      downloadChunks(
+        `${base}-${stamp}.csv`,
+        'text/csv;charset=utf-8',
+        toCSVChunks(input),
+      );
       return;
     case 'json':
-      downloadText(`${base}-${stamp}.json`, 'application/json', toJSON(input));
+      downloadChunks(
+        `${base}-${stamp}.json`,
+        'application/json',
+        toJSONChunks(input),
+      );
       return;
     case 'sql': {
       const tableName =
@@ -103,10 +152,10 @@ export function exportAs(format: ExportFormat, input: ExportInput): void {
           ? window.prompt('Table name for INSERT statements:', base)
           : base;
       if (!tableName) return;
-      downloadText(
+      downloadChunks(
         `${base}-${stamp}.sql`,
         'application/sql',
-        toSQL({ ...input, tableName }),
+        toSQLChunks({ ...input, tableName }),
       );
       return;
     }

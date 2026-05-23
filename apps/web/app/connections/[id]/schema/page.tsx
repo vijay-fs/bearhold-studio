@@ -170,6 +170,8 @@ export default function SchemaPage(props: { params: Promise<{ id: string }> }) {
             selection={selectedTable}
             onClose={() => setSelectedTable(null)}
             onOpenInSql={openSelectionInSql}
+            profile={profile}
+            onSchemaChange={() => void load(true)}
           />
         )}
       </div>

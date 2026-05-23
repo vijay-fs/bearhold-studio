@@ -26,6 +26,7 @@ import {
   RotateCcw,
   Search,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
 
@@ -49,6 +50,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import type { Column as SchemaColumn, ForeignKey } from '@dbstudio/erd';
+import { BulkInsertDialog } from '@/components/BulkInsertDialog';
 
 // AG Grid v33+ requires explicit module registration — without this the
 // grid mounts as an empty shell. Registering the full community bundle is
@@ -292,6 +294,8 @@ export function ResultTable({
   const [bulkDeleteOpen, setBulkDeleteOpen] = useState(false);
   const [bulkDeleteApplying, setBulkDeleteApplying] = useState(false);
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+
+  const [bulkInsertOpen, setBulkInsertOpen] = useState(false);
 
   /** When set, the JSON viewer dialog is open and showing this cell's
    *  parsed value as a collapsible tree. Driven by the per-cell expand
@@ -817,6 +821,17 @@ export function ResultTable({
               New row
             </button>
           )}
+          {editable && editableReady && (
+            <button
+              type="button"
+              onClick={() => setBulkInsertOpen(true)}
+              className="inline-flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-background hover:text-foreground"
+              title="Bulk-insert rows from pasted CSV"
+            >
+              <Upload className="h-3 w-3" />
+              Bulk insert
+            </button>
+          )}
           {canExport && (
             <ExportMenu onExport={handleExport} />
           )}
@@ -1221,6 +1236,18 @@ export function ResultTable({
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {editable && (
+        <BulkInsertDialog
+          open={bulkInsertOpen}
+          onOpenChange={setBulkInsertOpen}
+          profile={editable.profile}
+          schema={editable.schema}
+          table={editable.table}
+          columns={editable.tableColumns}
+          onChanged={editable.onChanged}
+        />
+      )}
     </div>
   );
 }
