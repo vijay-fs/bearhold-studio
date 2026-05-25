@@ -10,6 +10,11 @@ out/
 target/
 bin/
 
+# TS / Next incremental cache — committed by accident in earlier
+# commits but it's a local cache, not source. Ignored here so future
+# diffs don't churn from it.
+*.tsbuildinfo
+
 # Tauri
 src-tauri/target/
 src-tauri/gen/

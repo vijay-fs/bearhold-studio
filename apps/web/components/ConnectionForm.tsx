@@ -339,7 +339,18 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
     setPasswordInput('');
     setTunnelPasswordInput('');
     setTunnelPassphraseInput('');
-    router.push(`/schema?cid=${profile.id}` as Route);
+    // Land in the engine's primary workspace after save. The schema
+    // page introspects relational tables/columns — Mongo (documents)
+    // and Redis (keys) don't have an analog, and visiting /schema for
+    // them surfaces "feature not supported by this engine". Route
+    // them straight to their native browser instead.
+    const landing =
+      profile.engine === 'mongodb'
+        ? '/mongo'
+        : profile.engine === 'redis'
+          ? '/redis'
+          : '/schema';
+    router.push(`${landing}?cid=${profile.id}` as Route);
   };
 
   const username = profile.auth.kind === 'password' ? profile.auth.username : '';

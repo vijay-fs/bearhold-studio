@@ -52,10 +52,20 @@ export default function ConnectionsPage() {
           </div>
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
-            {profiles.map((p) => (
+            {profiles.map((p) => {
+              // Land in the engine-appropriate workspace, same
+              // dispatch as the sidebar default click. /schema is
+              // SQL-only; Mongo/Redis go to their own browsers.
+              const landing =
+                p.engine === 'mongodb'
+                  ? '/mongo'
+                  : p.engine === 'redis'
+                    ? '/redis'
+                    : '/sql';
+              return (
               <li key={p.id}>
                 <Link
-                  href={`/schema?cid=${p.id}`}
+                  href={`${landing}?cid=${p.id}`}
                   className="block rounded-lg border bg-card p-4 transition-colors hover:border-foreground/20 hover:bg-accent/50"
                 >
                   <div className="mb-2 flex items-center gap-2">
@@ -67,7 +77,8 @@ export default function ConnectionsPage() {
                   </p>
                 </Link>
               </li>
-            ))}
+              );
+            })}
           </ul>
         )}
       </div>
