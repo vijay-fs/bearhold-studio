@@ -166,7 +166,14 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
         file_path: p.file_path ?? '',
       }));
     } else {
-      const defaultPort = engine === 'mysql' || engine === 'mariadb' ? 3306 : 5432;
+      const defaultPort =
+        engine === 'mysql' || engine === 'mariadb'
+          ? 3306
+          : engine === 'mongodb'
+            ? 27017
+            : engine === 'redis'
+              ? 6379
+              : 5432;
       // Default DB name conventions differ wildly per engine, so we clear
       // it on engine switch to force the user to set the right value
       // (e.g. `postgres` -> `shop` for MySQL).
@@ -369,9 +376,8 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
               <option value="mysql">{ENGINE_LABELS.mysql}</option>
               <option value="mariadb">{ENGINE_LABELS.mariadb}</option>
               <option value="sqlite">{ENGINE_LABELS.sqlite}</option>
-              <option value="mongodb" disabled>
-                {ENGINE_LABELS.mongodb} (Phase 3)
-              </option>
+              <option value="mongodb">{ENGINE_LABELS.mongodb}</option>
+              <option value="redis">{ENGINE_LABELS.redis}</option>
             </Select>
           </Field>
         </CardContent>

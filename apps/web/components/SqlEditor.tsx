@@ -14,6 +14,7 @@ import type { Schema } from '@dbstudio/erd';
 import type { DatabaseEngine } from '@/lib/types';
 import { registerSqlCompletion } from '@/lib/sqlCompletion';
 import { formatSql } from '@/lib/formatSql';
+import { useTheme } from '@/lib/theme';
 
 // Monaco is large (~3 MB) and cannot SSR. Load it client-side only.
 const MonacoEditor = dynamic(() => import('@monaco-editor/react').then((m) => m.default), {
@@ -63,6 +64,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
   },
   ref,
 ) {
+  const theme = useTheme();
   const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
   // Completion-provider lifetime is tied to this editor instance. We
   // intentionally don't use a module-level singleton — that survives HMR
@@ -158,7 +160,7 @@ export const SqlEditor = forwardRef<SqlEditorHandle, SqlEditorProps>(function Sq
       defaultLanguage="sql"
       value={value}
       onChange={(next) => onChange(next ?? '')}
-      theme="vs"
+      theme={theme === 'dark' ? 'vs-dark' : 'vs'}
       options={{
         fontSize: 13,
         fontFamily: 'var(--font-mono), ui-monospace, monospace',

@@ -48,6 +48,19 @@ pub fn run() {
             commands::delete_row,
             commands::reconnect,
             commands::cancel_query,
+            commands::mongo_ping,
+            commands::mongo_list_databases,
+            commands::mongo_list_collections,
+            commands::mongo_find,
+            commands::mongo_insert_one,
+            commands::mongo_replace_one,
+            commands::mongo_delete_one,
+            commands::mongo_disconnect,
+            commands::redis_ping,
+            commands::redis_scan,
+            commands::redis_key_details,
+            commands::redis_delete,
+            commands::redis_disconnect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dbstudio");

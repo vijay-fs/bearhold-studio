@@ -91,15 +91,26 @@ export function newProfile(engine: DatabaseEngine = 'postgres'): ConnectionProfi
       file_path: '',
     };
   }
-  const defaultPort = engine === 'mysql' || engine === 'mariadb' ? 3306 : 5432;
+  const defaultPort =
+    engine === 'mysql' || engine === 'mariadb'
+      ? 3306
+      : engine === 'mongodb'
+        ? 27017
+        : engine === 'redis'
+          ? 6379
+          : 5432;
   return {
     id: crypto.randomUUID(),
     name: 'New connection',
     engine,
     host: 'localhost',
     port: defaultPort,
-    database: 'postgres',
-    auth: { kind: 'password', username: 'postgres', password_ref: '' },
+    // Database + username start empty rather than being pre-filled
+    // with `postgres`. The PG-specific default was misleading on
+    // other engines (MySQL doesn't have a `postgres` user/db) and
+    // even on PG the user almost always wants to type their own.
+    database: '',
+    auth: { kind: 'password', username: '', password_ref: '' },
     tls: 'prefer',
     ssh_tunnel: null,
     options: {},

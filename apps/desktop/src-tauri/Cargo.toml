@@ -18,6 +18,8 @@ dbstudio-core = { path = "../../../services/core" }
 dbstudio-driver-postgres = { path = "../../../services/drivers/postgres" }
 dbstudio-driver-mysql = { path = "../../../services/drivers/mysql" }
 dbstudio-driver-sqlite = { path = "../../../services/drivers/sqlite" }
+dbstudio-driver-mongodb = { path = "../../../services/drivers/mongodb" }
+dbstudio-driver-redis = { path = "../../../services/drivers/redis" }
 tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = { workspace = true }

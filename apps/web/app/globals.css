@@ -110,3 +110,48 @@
     background: transparent;
   }
 }
+
+/* React Flow theming overrides. The bundled CSS hard-codes a light
+   palette for the controls toolbar (zoom/fit/relayout buttons) and
+   the minimap — buttons get a white background and dark-grey SVG
+   fills, and the minimap mask is light-grey. Wrapping the outer
+   elements with Tailwind classes doesn't reach inside the React Flow
+   DOM, so we override the engine's own classes here. Light-mode
+   defaults stay unchanged; dark mode flips backgrounds and icon
+   fills to follow the active theme.
+
+   Light + dark both target the same selectors via theme variables so
+   any user-defined CSS variables still apply. */
+.react-flow__controls,
+.react-flow__minimap {
+  background: hsl(var(--card)) !important;
+  border: 1px solid hsl(var(--border)) !important;
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.08) !important;
+}
+.react-flow__controls-button {
+  background: hsl(var(--card)) !important;
+  border-bottom: 1px solid hsl(var(--border)) !important;
+  color: hsl(var(--foreground)) !important;
+}
+.react-flow__controls-button:hover {
+  background: hsl(var(--accent)) !important;
+}
+.react-flow__controls-button svg {
+  fill: hsl(var(--foreground)) !important;
+}
+.react-flow__minimap-mask {
+  fill: hsl(var(--muted-foreground) / 0.15) !important;
+}
+.react-flow__minimap-node {
+  fill: hsl(var(--muted-foreground) / 0.4) !important;
+  stroke: hsl(var(--border)) !important;
+}
+/* The background dots also use a hardcoded mid-grey that disappears
+   against the dark canvas — push them a touch brighter under .dark
+   so the dotted grid stays a visible anchor. */
+.dark .react-flow__background {
+  background-color: hsl(var(--background));
+}
+.dark .react-flow__background pattern circle {
+  fill: hsl(var(--muted-foreground) / 0.35);
+}

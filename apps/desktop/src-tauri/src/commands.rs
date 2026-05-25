@@ -36,7 +36,8 @@ pub fn list_engines() -> Vec<DatabaseEngine> {
         DatabaseEngine::MySql,
         DatabaseEngine::MariaDb,
         DatabaseEngine::Sqlite,
-        // The rest are reserved for future phases.
+        DatabaseEngine::MongoDb,
+        DatabaseEngine::Redis,
     ]
 }
 
@@ -45,6 +46,17 @@ pub async fn test_connection(
     state: State<'_, AppState>,
     profile: ConnectionProfile,
 ) -> CommandResult<()> {
+    // Mongo and Redis live outside the SQL Driver trait — dispatch to
+    // their own ping methods so a "Test connection" on those profiles
+    // actually reaches the right backend.
+    if matches!(profile.engine, DatabaseEngine::MongoDb) {
+        state.mongo.ping(&profile).await?;
+        return Ok(());
+    }
+    if matches!(profile.engine, DatabaseEngine::Redis) {
+        state.redis.ping(&profile).await?;
+        return Ok(());
+    }
     let driver = state
         .driver_for(profile.engine)
         .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
@@ -187,4 +199,149 @@ pub async fn delete_secrets(profile_id: Uuid) -> CommandResult<()> {
 pub async fn discover_host_key(host: String, port: u16) -> CommandResult<String> {
     let fp = ssh_tunnel::discover_fingerprint(&host, port).await?;
     Ok(fp)
+}
+
+// ---- mongo commands --------------------------------------------------------
+// MongoDB lives outside the SQL Driver trait — it's a document store, so
+// the per-collection / per-document operations get their own command
+// surface that the frontend's mongo workspace dispatches against directly.
+
+use dbstudio_driver_mongodb::{FindRequest, FindResponse};
+
+/// Ping a Mongo deployment. Used by Test Connection on Mongo profiles.
+#[tauri::command]
+pub async fn mongo_ping(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<()> {
+    state.mongo.ping(&profile).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn mongo_list_databases(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<Vec<String>> {
+    Ok(state.mongo.list_databases(&profile).await?)
+}
+
+#[tauri::command]
+pub async fn mongo_list_collections(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+) -> CommandResult<Vec<String>> {
+    Ok(state.mongo.list_collections(&profile, &database).await?)
+}
+
+#[tauri::command]
+pub async fn mongo_find(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    request: FindRequest,
+) -> CommandResult<FindResponse> {
+    Ok(state.mongo.find(&profile, request).await?)
+}
+
+#[tauri::command]
+pub async fn mongo_insert_one(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    document: serde_json::Value,
+) -> CommandResult<serde_json::Value> {
+    Ok(state
+        .mongo
+        .insert_one(&profile, &database, &collection, document)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_replace_one(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    document: serde_json::Value,
+) -> CommandResult<u64> {
+    Ok(state
+        .mongo
+        .replace_one(&profile, &database, &collection, document)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_delete_one(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    id: serde_json::Value,
+) -> CommandResult<u64> {
+    Ok(state
+        .mongo
+        .delete_one(&profile, &database, &collection, id)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_disconnect(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<()> {
+    state.mongo.disconnect(&profile).await?;
+    Ok(())
+}
+
+// ---- redis commands --------------------------------------------------------
+// Redis is a key/value store — also outside the SQL Driver trait —
+// exposing its own typed surface for the keyspace browser.
+
+use dbstudio_driver_redis::{RedisKeyDetails, ScanRequest, ScanResponse};
+
+#[tauri::command]
+pub async fn redis_ping(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<()> {
+    state.redis.ping(&profile).await?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn redis_scan(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    request: ScanRequest,
+) -> CommandResult<ScanResponse> {
+    Ok(state.redis.scan(&profile, request).await?)
+}
+
+#[tauri::command]
+pub async fn redis_key_details(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    key: String,
+) -> CommandResult<RedisKeyDetails> {
+    Ok(state.redis.key_details(&profile, &key).await?)
+}
+
+#[tauri::command]
+pub async fn redis_delete(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    key: String,
+) -> CommandResult<u64> {
+    Ok(state.redis.delete(&profile, &key).await?)
+}
+
+#[tauri::command]
+pub async fn redis_disconnect(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<()> {
+    state.redis.disconnect(&profile).await?;
+    Ok(())
 }

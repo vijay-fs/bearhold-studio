@@ -98,7 +98,17 @@ export function layoutSchema(
         type: 'smoothstep',
         animated: false,
         label,
-        labelStyle: { fontSize: 10, fontFamily: 'var(--font-mono, monospace)' },
+        // React Flow renders edge labels as SVG <text>, where `fill`
+        // controls the text colour. Without an explicit fill the
+        // browser uses its default (black on light, still black on
+        // dark) and the column-name labels become invisible on the
+        // dark theme. Wiring it to the same CSS var as body text
+        // means it follows whatever theme is active.
+        labelStyle: {
+          fontSize: 10,
+          fontFamily: 'var(--font-mono, monospace)',
+          fill: 'hsl(var(--foreground))',
+        },
         labelBgPadding: [4, 2],
         labelBgBorderRadius: 4,
         labelBgStyle: { fill: 'hsl(var(--background))', fillOpacity: 0.9 },

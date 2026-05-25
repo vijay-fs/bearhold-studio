@@ -39,6 +39,8 @@ import type {
 } from '@/lib/types';
 import { exportAs, type ExportFormat } from '@/lib/exporters';
 import { cn } from '@/lib/utils';
+import { useTheme } from '@/lib/theme';
+import { useTableLayouts, layoutKey } from '@/store/tableLayouts';
 import { api } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
@@ -66,26 +68,45 @@ ModuleRegistry.registerModules([AllCommunityModule]);
 // Compact theme — closer to the old hand-rolled grid's density. AG Grid's
 // `spacing` parameter scales most internal paddings; explicit row/header
 // heights nail the per-row footprint regardless of font metrics.
-const dbstudioTheme = themeQuartz.withParams({
+//
+// We build two variants (light / dark) and pick at render time based on
+// the document's .dark class. AG Grid's themeQuartz doesn't honor
+// CSS-variable colors at runtime (it pre-computes derived shades when
+// the theme is built), so two static palettes is the reliable path.
+const COMMON_THEME_PARAMS = {
   accentColor: 'rgb(59, 130, 246)',
   backgroundColor: 'transparent',
-  borderColor: 'rgb(228, 231, 236)',
   borderRadius: 2,
   fontFamily: 'var(--font-mono), ui-monospace, monospace',
   fontSize: 11,
-  foregroundColor: 'rgb(15, 23, 42)',
-  headerBackgroundColor: 'rgb(243, 244, 246)',
-  headerTextColor: 'rgb(15, 23, 42)',
   headerFontWeight: 600,
   headerFontSize: 11,
   headerHeight: 28,
   rowHeight: 24,
   oddRowBackgroundColor: 'transparent',
-  rowHoverColor: 'rgba(59, 130, 246, 0.04)',
-  selectedRowBackgroundColor: 'rgba(59, 130, 246, 0.08)',
   spacing: 4,
   wrapperBorder: false,
   wrapperBorderRadius: 0,
+} as const;
+
+const dbstudioThemeLight = themeQuartz.withParams({
+  ...COMMON_THEME_PARAMS,
+  borderColor: 'rgb(228, 231, 236)',
+  foregroundColor: 'rgb(15, 23, 42)',
+  headerBackgroundColor: 'rgb(243, 244, 246)',
+  headerTextColor: 'rgb(15, 23, 42)',
+  rowHoverColor: 'rgba(59, 130, 246, 0.04)',
+  selectedRowBackgroundColor: 'rgba(59, 130, 246, 0.08)',
+});
+
+const dbstudioThemeDark = themeQuartz.withParams({
+  ...COMMON_THEME_PARAMS,
+  borderColor: 'rgb(38, 38, 42)',
+  foregroundColor: 'rgb(229, 231, 235)',
+  headerBackgroundColor: 'rgb(28, 28, 32)',
+  headerTextColor: 'rgb(229, 231, 235)',
+  rowHoverColor: 'rgba(96, 165, 250, 0.08)',
+  selectedRowBackgroundColor: 'rgba(96, 165, 250, 0.16)',
 });
 
 export interface EditableConfig {
@@ -228,6 +249,8 @@ export function ResultTable({
   editable?: EditableConfig;
 }) {
   const gridApiRef = useRef<GridApi | null>(null);
+  const theme = useTheme();
+  const gridTheme = theme === 'dark' ? dbstudioThemeDark : dbstudioThemeLight;
 
   // ---- Editable readiness ------------------------------------------------
   const pkColumnNames = useMemo(
@@ -238,6 +261,46 @@ export function ResultTable({
     if (!editable) return false;
     return editable.pkColumns.every((c) => result.columns.some((rc) => rc.name === c));
   }, [editable, result.columns]);
+
+  // ---- Persisted column layout (per connection+table) -------------------
+  // Only applies when we have an editable result — that's the only case
+  // where we have a stable key (connection id + schema + table). Random
+  // SELECTs across joins don't get a layout because there's no natural
+  // identity to scope one to. Application is done via the grid's
+  // `onFirstDataRendered` event (and re-applied when the storage key
+  // changes), so columnDefs don't need to be in any effect's deps.
+  const layoutStorageKey = editable
+    ? layoutKey(editable.profile.id, editable.schema, editable.table)
+    : null;
+  const saveLayout = useTableLayouts((s) => s.save);
+  const loadLayout = useTableLayouts((s) => s.load);
+
+  /** Reapply when the storage key flips (table change in same grid
+   *  mount). On the very first render gridApiRef is null and the
+   *  onFirstDataRendered handler covers the initial apply. */
+  useEffect(() => {
+    if (!layoutStorageKey) return;
+    const api = gridApiRef.current;
+    if (!api) return;
+    const saved = loadLayout(layoutStorageKey);
+    if (!saved) return;
+    api.applyColumnState({ state: saved, applyOrder: true });
+  }, [layoutStorageKey, loadLayout]);
+
+  /** Save the current column state. Debounced via rAF so a single
+   *  resize drag (which fires onColumnResized many times) doesn't
+   *  write to localStorage on every frame. */
+  const layoutSaveScheduled = useRef(false);
+  const persistLayoutSoon = useCallback(() => {
+    if (!layoutStorageKey || layoutSaveScheduled.current) return;
+    layoutSaveScheduled.current = true;
+    requestAnimationFrame(() => {
+      layoutSaveScheduled.current = false;
+      const api = gridApiRef.current;
+      if (!api || !layoutStorageKey) return;
+      saveLayout(layoutStorageKey, api.getColumnState());
+    });
+  }, [layoutStorageKey, saveLayout]);
 
   /** Map of local-column-name → referenced (schema, table, column), derived
    *  from `editable.foreignKeys`. Drives the in-cell jump affordance.
@@ -912,7 +975,7 @@ export function ResultTable({
             </div>
           )}
           <AgGridReact
-            theme={dbstudioTheme}
+            theme={gridTheme}
             rowData={rowData}
             columnDefs={columnDefs}
             defaultColDef={defaultColDef}
@@ -920,6 +983,20 @@ export function ResultTable({
             onGridReady={(p) => {
               gridApiRef.current = p.api;
             }}
+            // Apply the saved layout the first time data shows up.
+            // Earlier (onGridReady) is too soon — the columns haven't
+            // been registered yet, so applyColumnState would be a no-op.
+            onFirstDataRendered={(p) => {
+              if (!layoutStorageKey) return;
+              const saved = loadLayout(layoutStorageKey);
+              if (saved) {
+                p.api.applyColumnState({ state: saved, applyOrder: true });
+              }
+            }}
+            onColumnMoved={persistLayoutSoon}
+            onColumnResized={persistLayoutSoon}
+            onColumnVisible={persistLayoutSoon}
+            onSortChanged={persistLayoutSoon}
             quickFilterText={quickFilter}
             onCellValueChanged={onCellValueChanged}
             onFilterChanged={onFilterChanged}

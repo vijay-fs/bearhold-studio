@@ -21,6 +21,7 @@ import {
   Moon,
   Pin,
   PinOff,
+  GitCompare,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -141,11 +142,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : (
             <ul className="space-y-0.5">
               {sortedProfiles.map((p) => {
-                // Default connection click lands in the SQL workspace — the
-                // primary daily-driver surface. Schema, History and Snippets
-                // are accessible from the per-row kebab menu, which keeps
-                // the sidebar uncluttered when there are many connections.
-                const href = `/connections/${p.id}/sql` as Route;
+                // Default connection click lands in the engine's
+                // primary workspace — SQL editor for SQL engines,
+                // document browser for MongoDB, key/value browser for
+                // Redis. NoSQL engines don't have a SQL editor at all
+                // so we route them straight to the workspace that
+                // matches their semantics.
+                const defaultPath =
+                  p.engine === 'mongodb'
+                    ? 'mongo'
+                    : p.engine === 'redis'
+                      ? 'redis'
+                      : 'sql';
+                const href = `/connections/${p.id}/${defaultPath}` as Route;
                 const active = pathname?.startsWith(`/connections/${p.id}`);
                 return (
                   <li key={p.id}>
@@ -175,13 +184,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       </Link>
                       <ConnectionMenu
                         profileId={p.id}
+                        engine={p.engine}
                         onDelete={() => askDelete(p.id, p.name)}
                         active={Boolean(active)}
                         pinned={Boolean(meta[p.id]?.pinned)}
                         onTogglePin={() => togglePinned(p.id)}
                       />
                     </div>
-                    {active && (
+                    {/* TableNav is SQL-shaped (introspects tables /
+                        columns) — Mongo/Redis don't surface tables via
+                        the SQL Driver trait, and their workspaces have
+                        their own native navigation, so skip rendering
+                        it for those engines. */}
+                    {active && p.engine !== 'mongodb' && p.engine !== 'redis' && (
                       <div className="mt-1 ml-7">
                         <TableNav profile={p} pathname={pathname ?? ''} router={router} />
                       </div>
@@ -192,6 +207,21 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </ul>
           )}
         </nav>
+
+        <div className="border-t px-2 py-1.5">
+          <Link
+            href={'/diff' as Route}
+            className={cn(
+              'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
+              pathname === '/diff'
+                ? 'bg-background font-medium text-foreground shadow-sm'
+                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+            )}
+          >
+            <GitCompare className="h-3.5 w-3.5 shrink-0" />
+            <span>Schema diff</span>
+          </Link>
+        </div>
 
         <div className="flex items-center justify-between gap-2 border-t px-5 py-2.5 text-[10px] text-muted-foreground">
           <span>Phase 1 · local-only · unsigned build</span>
@@ -268,17 +298,25 @@ function ThemeToggle() {
 
 function ConnectionMenu({
   profileId,
+  engine,
   onDelete,
   active,
   pinned,
   onTogglePin,
 }: {
   profileId: string;
+  engine: ConnectionProfile['engine'];
   onDelete: () => void;
   active: boolean;
   pinned: boolean;
   onTogglePin: () => void;
 }) {
+  // Schema / History / Snippets are SQL-only concepts. Mongo and Redis
+  // don't have introspectable relational schemas, don't accumulate
+  // query history (they aren't queries), and don't host saved SQL
+  // snippets. Hide those entries on non-SQL connections so the user
+  // can't navigate into pages that would just error out.
+  const sqlOnly = engine !== 'mongodb' && engine !== 'redis';
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -306,25 +344,29 @@ function ConnectionMenu({
           {pinned ? 'Unpin' : 'Pin to top'}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem asChild>
-          <Link href={`/connections/${profileId}/schema` as Route}>
-            <Workflow className="h-3 w-3" />
-            Schema
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <Link href={`/connections/${profileId}/history` as Route}>
-            <History className="h-3 w-3" />
-            History
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuItem asChild>
-          <Link href={`/connections/${profileId}/snippets` as Route}>
-            <Bookmark className="h-3 w-3" />
-            Saved snippets
-          </Link>
-        </DropdownMenuItem>
-        <DropdownMenuSeparator />
+        {sqlOnly && (
+          <>
+            <DropdownMenuItem asChild>
+              <Link href={`/connections/${profileId}/schema` as Route}>
+                <Workflow className="h-3 w-3" />
+                Schema
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={`/connections/${profileId}/history` as Route}>
+                <History className="h-3 w-3" />
+                History
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuItem asChild>
+              <Link href={`/connections/${profileId}/snippets` as Route}>
+                <Bookmark className="h-3 w-3" />
+                Saved snippets
+              </Link>
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        )}
         <DropdownMenuItem asChild>
           <Link href={`/connections/${profileId}/edit` as Route}>
             <Pencil className="h-3 w-3" />

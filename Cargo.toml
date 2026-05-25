@@ -6,6 +6,8 @@ members = [
   "services/drivers/postgres",
   "services/drivers/mysql",
   "services/drivers/sqlite",
+  "services/drivers/mongodb",
+  "services/drivers/redis",
   "apps/desktop/src-tauri",
 ]
 
@@ -49,6 +51,25 @@ sqlx = { version = "0.8", default-features = false, features = [
   "bigdecimal",
 ] }
 bigdecimal = "0.4"
+
+# MongoDB. bson is pulled in transitively by mongodb so versions stay
+# in lockstep — access types via `mongodb::bson::*` in driver code.
+# `compat-3-3-0` is a required forward-compat acknowledgement;
+# `bson-2` picks the bson 2.x line (the only one currently stable).
+mongodb = { version = "3.1", default-features = false, features = [
+  "rustls-tls",
+  "compat-3-3-0",
+  "bson-2",
+] }
+
+# Redis client. `tokio-comp` brings async support on top of the tokio
+# runtime; `connection-manager` gives us reconnect-on-error pooling
+# so a single dropped connection doesn't kill the whole session.
+redis = { version = "0.27", default-features = false, features = [
+  "tokio-comp",
+  "tokio-rustls-comp",
+  "connection-manager",
+] }
 
 # SSH for tunneling
 russh = "0.46"

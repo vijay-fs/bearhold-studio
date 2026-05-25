@@ -9,6 +9,11 @@ import type {
   CommandError,
   ConnectionProfile,
   DatabaseEngine,
+  MongoFindRequest,
+  MongoFindResponse,
+  RedisKeyDetails,
+  RedisScanRequest,
+  RedisScanResponse,
   QueryRequest,
   QueryResult,
   RowDelete,
@@ -103,6 +108,80 @@ export const api = {
   // the id is unknown — typically because the query already finished.
   cancelQuery(profile: ConnectionProfile, queryId: string): Promise<null> {
     return invoke('cancel_query', { profile, queryId });
+  },
+
+  // ---- MongoDB ----
+  // Mongo is a document store, so it sits outside the SQL Driver API
+  // surface and gets its own namespace. Every method is a Tauri
+  // command in the `mongo_*` group on the Rust side.
+  mongo: {
+    ping(profile: ConnectionProfile): Promise<null> {
+      return invoke('mongo_ping', { profile });
+    },
+    listDatabases(profile: ConnectionProfile): Promise<string[]> {
+      return invoke('mongo_list_databases', { profile });
+    },
+    listCollections(profile: ConnectionProfile, database: string): Promise<string[]> {
+      return invoke('mongo_list_collections', { profile, database });
+    },
+    find(profile: ConnectionProfile, request: MongoFindRequest): Promise<MongoFindResponse> {
+      return invoke('mongo_find', { profile, request });
+    },
+    /** Insert one document. Returns the inserted `_id` in extended-
+     *  JSON form so the UI can refetch the row that just landed. */
+    insertOne(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      document: Record<string, unknown>,
+    ): Promise<unknown> {
+      return invoke('mongo_insert_one', { profile, database, collection, document });
+    },
+    /** Replace one document. `document._id` is used as the filter; the
+     *  rest of the document becomes the new payload. */
+    replaceOne(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      document: Record<string, unknown>,
+    ): Promise<number> {
+      return invoke('mongo_replace_one', { profile, database, collection, document });
+    },
+    /** Delete one document by `_id`. The `id` argument is the
+     *  extended-JSON form of the _id field — pass it as the UI saw it
+     *  (`{"$oid": "..."}` for ObjectId, raw scalar for primitives). */
+    deleteOne(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      id: unknown,
+    ): Promise<number> {
+      return invoke('mongo_delete_one', { profile, database, collection, id });
+    },
+    disconnect(profile: ConnectionProfile): Promise<null> {
+      return invoke('mongo_disconnect', { profile });
+    },
+  },
+
+  // ---- Redis ----
+  // Key/value store; the workspace dispatches against this namespace
+  // rather than the SQL-shaped runQuery surface.
+  redis: {
+    ping(profile: ConnectionProfile): Promise<null> {
+      return invoke('redis_ping', { profile });
+    },
+    scan(profile: ConnectionProfile, request: RedisScanRequest): Promise<RedisScanResponse> {
+      return invoke('redis_scan', { profile, request });
+    },
+    keyDetails(profile: ConnectionProfile, key: string): Promise<RedisKeyDetails> {
+      return invoke('redis_key_details', { profile, key });
+    },
+    delete(profile: ConnectionProfile, key: string): Promise<number> {
+      return invoke('redis_delete', { profile, key });
+    },
+    disconnect(profile: ConnectionProfile): Promise<null> {
+      return invoke('redis_disconnect', { profile });
+    },
   },
 };
 

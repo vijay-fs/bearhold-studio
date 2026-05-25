@@ -1,0 +1,53 @@
+# Local dev databases for testing the MongoDB + Redis surfaces. Bring
+# everything up with `docker compose up -d` from this directory.
+# Tear down with `docker compose down -v` (the `-v` wipes the volumes
+# so you can re-seed cleanly).
+#
+# Both services expose their default ports on localhost with no auth,
+# matching what the connection form would default to when you pick
+# "MongoDB" or "Redis" in dbstudio.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: dbstudio-mongo
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+      - ./mongo-seed.js:/docker-entrypoint-initdb.d/seed.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  redis:
+    image: redis:7
+    container_name: dbstudio-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # Sidecar that seeds Redis with sample data once the server is
+  # healthy, then exits. Keeps the seeding logic out of the image
+  # while still being one `docker compose up` away.
+  redis-seed:
+    image: redis:7
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./redis-seed.sh:/seed.sh:ro
+    entrypoint: ["sh", "/seed.sh"]
+    restart: "no"
+
+volumes:
+  mongo-data:
+  redis-data:

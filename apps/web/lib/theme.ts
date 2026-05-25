@@ -1,12 +1,19 @@
+'use client';
+
 // Tiny theme controller. Two states (light / dark), persisted in
-// localStorage, applied by toggling the `.dark` class on
-// <html>. A pre-paint script in app/layout.tsx reads the same
-// localStorage key synchronously so the page never flashes the wrong
-// theme on cold load.
+// localStorage, applied by toggling the `.dark` class on <html>. A
+// pre-paint script lives inline in app/layout.tsx (the layout is a
+// Server Component and can't import this module's hooks at all) and
+// reads the same `dbstudio.theme` key synchronously so the page never
+// flashes the wrong theme on cold load. The two stay in sync because
+// both use the constant exported below.
+
+import { useEffect, useState } from 'react';
 
 export type Theme = 'light' | 'dark';
 
-const STORAGE_KEY = 'dbstudio.theme';
+export const THEME_STORAGE_KEY = 'dbstudio.theme';
+const STORAGE_KEY = THEME_STORAGE_KEY;
 
 /** Read the persisted theme, falling back to the OS preference. SSR-safe
  *  — returns 'light' during server render so React's hydration matches
@@ -30,8 +37,23 @@ export function setTheme(theme: Theme): void {
   window.localStorage.setItem(STORAGE_KEY, theme);
 }
 
-/** Inline source for the no-flash script. Mirrors `readTheme` minus the
- *  TypeScript wrapping so it can run pre-paint in <head>. */
-export const NO_FLASH_SCRIPT = `
-(function(){try{var t=localStorage.getItem('${STORAGE_KEY}');if(!t){t=matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}if(t==='dark'){document.documentElement.classList.add('dark');}}catch(e){}})();
-`;
+/** Reactive variant of `readTheme` — subscribes to `.dark` class flips on
+ *  <html> via a MutationObserver, so components that branch on theme
+ *  (Monaco syntax theme, AG Grid theme params) update live without
+ *  needing a remount. SSR-safe: defaults to 'light' until mount. */
+export function useTheme(): Theme {
+  const [theme, setT] = useState<Theme>('light');
+  useEffect(() => {
+    const read = (): Theme =>
+      document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    setT(read());
+    const observer = new MutationObserver(() => setT(read()));
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ['class'],
+    });
+    return () => observer.disconnect();
+  }, []);
+  return theme;
+}
+

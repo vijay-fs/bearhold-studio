@@ -1,7 +1,14 @@
 import type { Metadata, Viewport } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
-import { NO_FLASH_SCRIPT } from '@/lib/theme';
+
+// Pre-paint theme application — inlined here (rather than imported from
+// lib/theme) because this file is a Server Component and lib/theme is
+// marked 'use client' for its hooks. Keep the storage key in sync with
+// `THEME_STORAGE_KEY` in lib/theme.ts.
+const NO_FLASH_SCRIPT = `
+(function(){try{var t=localStorage.getItem('dbstudio.theme');if(!t){t=matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}if(t==='dark'){document.documentElement.classList.add('dark');}}catch(e){}})();
+`;
 
 const inter = Inter({
   subsets: ['latin'],
