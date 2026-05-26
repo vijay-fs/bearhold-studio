@@ -34,10 +34,17 @@ import type {
   CellUpdate,
   ConnectionProfile,
   QueryResult,
+  ResultColumn,
   RowDelete,
   RowInsert,
 } from '@/lib/types';
-import { exportAs, type ExportFormat } from '@/lib/exporters';
+import {
+  exportAs,
+  toCSVChunks,
+  toJSONChunks,
+  toSQLChunks,
+  type ExportFormat,
+} from '@/lib/exporters';
 import { cn } from '@/lib/utils';
 import { useTheme } from '@/lib/theme';
 import { useTableLayouts, layoutKey } from '@/store/tableLayouts';
@@ -359,6 +366,20 @@ export function ResultTable({
   const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
 
   const [bulkInsertOpen, setBulkInsertOpen] = useState(false);
+
+  /** Right-click context menu state. `x`/`y` are page-relative pixel
+   *  coords for absolute positioning. `rows` is what the menu's
+   *  copy actions operate on: the multi-row selection when one
+   *  exists, otherwise just the right-clicked row. `cellValue` is
+   *  whatever cell the cursor was over so the "Copy cell value"
+   *  shortcut can target it directly. */
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    rows: Record<string, unknown>[];
+    cellValue: unknown;
+    cellColumn: string | null;
+  } | null>(null);
 
   /** When set, the JSON viewer dialog is open and showing this cell's
    *  parsed value as a collapsible tree. Driven by the per-cell expand
@@ -1020,6 +1041,34 @@ export function ResultTable({
                 .map((r) => r as Record<string, unknown>);
               setSelectedRows(rows);
             }}
+            // Suppress AG Grid's own (Enterprise-only) context menu
+            // bookkeeping so the native event reaches our handler
+            // cleanly. We render a custom menu below.
+            preventDefaultOnContextMenu
+            onCellContextMenu={(e) => {
+              const evt = e.event as MouseEvent | undefined;
+              if (!evt || !e.data) return;
+              evt.preventDefault();
+              // If the user already multi-selected rows, operate on
+              // the selection. If they right-clicked an unselected
+              // row, treat that single row as the target — matches
+              // the convention every spreadsheet uses.
+              const apiSelected = e.api
+                .getSelectedRows()
+                .map((r) => r as Record<string, unknown>);
+              const rowData = e.data as Record<string, unknown>;
+              const rows =
+                apiSelected.length > 0 && apiSelected.includes(rowData)
+                  ? apiSelected
+                  : [rowData];
+              setContextMenu({
+                x: evt.clientX,
+                y: evt.clientY,
+                rows,
+                cellValue: e.value,
+                cellColumn: e.colDef.field ?? null,
+              });
+            }}
             stopEditingWhenCellsLoseFocus
             // Double-click opens the editor (or F2 / Enter on a focused cell).
             // Single-click edit is too easy to trigger accidentally.
@@ -1325,8 +1374,204 @@ export function ResultTable({
           onChanged={editable.onChanged}
         />
       )}
+
+      {/* Right-click context menu — appears at the cursor when the
+          user right-clicks a row. Operates on the multi-selection
+          when present, otherwise the single right-clicked row.
+          Each item writes the formatted output to clipboard. */}
+      {contextMenu && (
+        <ResultContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          rows={contextMenu.rows}
+          cellValue={contextMenu.cellValue}
+          cellColumn={contextMenu.cellColumn}
+          columns={result.columns}
+          tableName={editable ? editable.table : null}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
+}
+
+// ---- Right-click context menu ------------------------------------------
+
+/** Floating menu that appears at the cursor on cell right-click. Each
+ *  action formats the target rows and writes the result to the
+ *  clipboard. Reuses lib/exporters.ts so the formatting matches what
+ *  the toolbar's Export menu produces — `cmd+v` into a SQL workspace,
+ *  spreadsheet, or text editor all just work. Click-outside / Escape
+ *  closes the menu. */
+function ResultContextMenu({
+  x,
+  y,
+  rows,
+  cellValue,
+  cellColumn,
+  columns,
+  tableName,
+  onClose,
+}: {
+  x: number;
+  y: number;
+  rows: Record<string, unknown>[];
+  cellValue: unknown;
+  cellColumn: string | null;
+  columns: ResultColumn[];
+  /** When the result is anchored to a known table (editable SELECT),
+   *  the INSERT statement targets it. Otherwise the user is prompted
+   *  for a name. */
+  tableName: string | null;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Close on click-outside or Escape. Mousedown rather than click
+  // catches the press before any inner button steals focus.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (!ref.current?.contains(e.target as Node)) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [onClose]);
+
+  // Strip the AG-Grid-internal `__id` field from rows we hand to
+  // the exporters — it's not a real column and would otherwise show
+  // up in the CSV/JSON/SQL output.
+  const cleanRows = rows.map((r) => {
+    const out: Record<string, unknown> = {};
+    for (const c of columns) out[c.name] = r[c.name];
+    return out;
+  });
+  // The exporters take rows as arrays-of-values in column order;
+  // map from the keyed shape AG Grid hands us back.
+  const rowArrays = cleanRows.map((r) => columns.map((c) => r[c.name]));
+
+  const copy = (text: string) => {
+    void navigator.clipboard.writeText(text);
+    onClose();
+  };
+
+  const copyCellValue = () => copy(formatCellForCopy(cellValue));
+
+  const copyRowTabSeparated = () => {
+    // Mirror what Excel emits when you copy a row: tab-separated
+    // values, one row per line. Round-trips into spreadsheets
+    // without quoting overhead.
+    const lines = rowArrays.map((vals) =>
+      vals.map(formatCellForCopy).join('\t'),
+    );
+    copy(lines.join('\n'));
+  };
+
+  const copyCsv = () => {
+    const chunks = toCSVChunks({ columns, rows: rowArrays });
+    copy(chunks.join(''));
+  };
+
+  const copyJson = () => {
+    const chunks = toJSONChunks({ columns, rows: rowArrays });
+    copy(chunks.join(''));
+  };
+
+  const copySqlInsert = () => {
+    // Reuse the same table name the editable config used, otherwise
+    // fall back to a placeholder the user edits after pasting. We
+    // don't prompt here — the right-click menu should never block.
+    const target = tableName ?? 'your_table';
+    const chunks = toSQLChunks({ columns, rows: rowArrays, tableName: target });
+    copy(chunks.join(''));
+  };
+
+  // Position offset so the menu's top-left lands at the click, but
+  // clamped to the viewport so a near-edge click doesn't clip off.
+  const MENU_W = 220;
+  const MENU_H = 270;
+  const left =
+    typeof window !== 'undefined' && x + MENU_W > window.innerWidth
+      ? window.innerWidth - MENU_W - 8
+      : x;
+  const top =
+    typeof window !== 'undefined' && y + MENU_H > window.innerHeight
+      ? window.innerHeight - MENU_H - 8
+      : y;
+
+  return (
+    <div
+      ref={ref}
+      role="menu"
+      className="fixed z-50 min-w-[200px] overflow-hidden rounded-md border bg-popover text-popover-foreground shadow-lg"
+      style={{ left, top }}
+      onContextMenu={(e) => e.preventDefault()}
+    >
+      <div className="border-b bg-muted/40 px-3 py-1 text-[10px] uppercase tracking-wider text-muted-foreground">
+        {rows.length} row{rows.length === 1 ? '' : 's'}
+      </div>
+      {cellColumn != null && (
+        <MenuItem onClick={copyCellValue} title="Copy just the focused cell">
+          Copy cell value
+        </MenuItem>
+      )}
+      <MenuItem
+        onClick={copyRowTabSeparated}
+        title="Tab-separated, ready to paste into Excel / Numbers"
+      >
+        Copy row{rows.length === 1 ? '' : 's'} (TSV)
+      </MenuItem>
+      <div className="my-1 h-px bg-border" />
+      <MenuItem onClick={copyCsv}>Copy as CSV</MenuItem>
+      <MenuItem onClick={copyJson}>Copy as JSON</MenuItem>
+      <MenuItem onClick={copySqlInsert}>
+        Copy as INSERT
+        {!tableName && (
+          <span className="ml-1 text-[10px] text-muted-foreground">
+            (your_table)
+          </span>
+        )}
+      </MenuItem>
+    </div>
+  );
+}
+
+function MenuItem({
+  children,
+  onClick,
+  title,
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  title?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="menuitem"
+      onClick={onClick}
+      title={title}
+      className="block w-full px-3 py-1.5 text-left text-xs hover:bg-accent hover:text-accent-foreground"
+    >
+      {children}
+    </button>
+  );
+}
+
+/** Stringify a cell value the same way Cmd+C from a spreadsheet
+ *  would: NULL → empty, primitives → str(), objects/arrays → JSON.
+ *  Used by both the cell-value and TSV row copies. */
+function formatCellForCopy(v: unknown): string {
+  if (v === null || v === undefined) return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return JSON.stringify(v);
 }
 
 // ---- Cell renderer for FK columns ---------------------------------------

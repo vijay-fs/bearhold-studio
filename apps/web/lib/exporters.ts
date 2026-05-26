@@ -33,7 +33,7 @@ function csvField(value: unknown): string {
  *  can stream them out without first materializing the whole file as a
  *  single in-memory string. The string returned for a row already has
  *  its trailing newline, so the Blob is just `[header, row, row, …]`. */
-function toCSVChunks({
+export function toCSVChunks({
   columns,
   rows,
 }: {
@@ -52,7 +52,7 @@ function toCSVChunks({
  *  except we emit each object as its own string chunk, joined by commas
  *  and newlines. Order matters — `[`, first object, then for each
  *  subsequent `,\n` + object, finally `\n]`. */
-function toJSONChunks({
+export function toJSONChunks({
   columns,
   rows,
 }: {
@@ -90,7 +90,7 @@ function sqlIdent(name: string): string {
 }
 
 /** Chunked SQL writer — one INSERT statement per chunk. */
-function toSQLChunks({
+export function toSQLChunks({
   columns,
   rows,
   tableName,
