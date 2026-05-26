@@ -126,8 +126,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <div className="grid h-screen grid-cols-[260px_1fr] bg-background">
       <aside className="flex flex-col border-r bg-secondary/30">
         <div className="flex items-center gap-2 border-b px-5 py-3.5">
-          <Database className="h-5 w-5 text-primary" />
-          <span className="text-sm font-semibold tracking-tight">dbstudio</span>
+          {/* Source PNG is white-stroked on transparent. We need it
+              to read against both backgrounds: in light mode the
+              white strokes vanish on a light background, so we
+              invert (filter: invert(1)) — that flips the pixels to
+              dark and they show. In dark mode we leave it alone, so
+              the strokes stay white against the dark background.
+              The `dark:invert-0` cancels the default `invert` only
+              under the .dark theme. */}
+          <img
+            src="/app-icon.png"
+            alt=""
+            className="h-5 w-5 invert dark:invert-0"
+          />
+          <span className="text-sm font-semibold tracking-tight">Bearhold Studio</span>
         </div>
 
         <div className="flex items-center justify-between px-5 pt-4 pb-2">

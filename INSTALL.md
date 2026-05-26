@@ -1,23 +1,24 @@
-# Installing dbstudio
+# Installing Bearhold Studio
 
 ## macOS
 
 Two formats are produced by the build:
 
-- `dbstudio_0.0.1_aarch64.dmg` — drag-to-Applications installer
-- `dbstudio-macos-aarch64.zip` — the bundled `.app` zipped, for download-and-run
+- `Bearhold Studio_0.0.1_aarch64.dmg` — drag-to-Applications installer
+- `Bearhold Studio-macos-aarch64.zip` — the bundled `.app` zipped, for download-and-run
 
 Either way:
 
 1. Open the file.
-2. Drag `dbstudio.app` into `/Applications` (or anywhere — it's self-contained).
+2. Drag `Bearhold Studio.app` into `/Applications` (or anywhere — it's
+   self-contained).
 3. First launch: macOS Gatekeeper will refuse to open it because the app
    isn't signed with an Apple Developer ID. Right-click the app → **Open**,
    then click **Open** in the dialog. macOS remembers this choice; future
    launches start normally.
 
    Alternative: System Settings → Privacy & Security → scroll to the
-   "dbstudio was blocked" line → **Open Anyway**.
+   "Bearhold Studio was blocked" line → **Open Anyway**.
 
 Built for Apple Silicon (M1/M2/M3/M4). An Intel `x86_64.dmg` will follow
 when there's CI infrastructure to produce it.
@@ -26,8 +27,9 @@ when there's CI infrastructure to produce it.
 
 Produced by the GitHub Actions workflow (`.github/workflows/release.yml`):
 
-- `dbstudio_0.0.1_x64-setup.exe` — NSIS installer (recommended)
-- `dbstudio_0.0.1_x64_en-US.msi` — MSI for group-policy / enterprise rollout
+- `Bearhold Studio_0.0.1_x64-setup.exe` — NSIS installer (recommended)
+- `Bearhold Studio_0.0.1_x64_en-US.msi` — MSI for group-policy /
+  enterprise rollout
 
 Either way:
 
@@ -65,3 +67,14 @@ These builds are **unsigned**. For a real release:
 Once those certs land, `tauri.conf.json` gets the `signingIdentity`
 and the workflow gets the cert secrets — both are documented hooks
 Tauri provides natively.
+
+## Upgrade note from earlier `dbstudio` builds
+
+Earlier development builds were named `dbstudio` with bundle ID
+`studio.db.app`. macOS treats the renamed app (`studio.bearhold.app`)
+as a fresh install — your saved **passwords / SSH credentials** start
+empty in the new build and you'll re-enter them on first connect.
+
+Connection profiles themselves (names, hosts, ports, query history,
+snippets) live in the webview's localStorage and **do** carry over —
+the storage origin is the same.

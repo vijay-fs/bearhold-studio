@@ -23,7 +23,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: 'dbstudio',
+  title: 'Bearhold Studio',
   description: 'Cross-platform database management studio.',
 };
 

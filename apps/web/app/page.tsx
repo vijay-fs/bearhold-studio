@@ -5,7 +5,7 @@ export default function HomePage() {
   return (
     <main className="container py-16">
       <header className="mb-12">
-        <h1 className="text-4xl font-semibold tracking-tight">dbstudio</h1>
+        <h1 className="text-4xl font-semibold tracking-tight">Bearhold Studio</h1>
         <p className="mt-3 max-w-2xl text-base text-muted-foreground">
           Cross-platform database management studio. Connect to any engine, run queries with
           a real editor, and visualize your schema as an ER diagram.

@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "dbstudio",
+  "productName": "Bearhold Studio",
   "version": "0.0.1",
-  "identifier": "studio.db.app",
+  "identifier": "studio.bearhold.app",
   "build": {
     "beforeDevCommand": "pnpm --filter @dbstudio/web dev",
     "devUrl": "http://localhost:3000",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "dbstudio",
+        "title": "Bearhold Studio",
         "width": 1280,
         "height": 820,
         "minWidth": 960,
@@ -42,7 +42,7 @@
     "category": "DeveloperTool",
     "shortDescription": "Cross-platform database management studio",
     "longDescription": "Connect to PostgreSQL, MySQL, MongoDB, Redis, and more. SQL editor, result grid, and visual ER diagrams.",
-    "copyright": "Copyright (c) 2026 dbstudio contributors",
+    "copyright": "Copyright (c) 2026 Bearhold Studio contributors",
     "macOS": {
       "minimumSystemVersion": "10.15"
     }

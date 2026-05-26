@@ -283,7 +283,7 @@ export function CommandPalette() {
         <div className="flex items-center justify-between border-t px-3 py-2 text-[10px] text-muted-foreground">
           <span className="flex items-center gap-1">
             <Database className="h-3 w-3" />
-            dbstudio
+            Bearhold Studio
           </span>
           <span className="flex items-center gap-3">
             <span>

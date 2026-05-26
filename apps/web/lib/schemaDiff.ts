@@ -22,7 +22,19 @@ import type {
 } from '@dbstudio/erd';
 
 import type { DatabaseEngine } from './types';
-import { softQuoteIdent, quoteStyleForEngine } from './sqlIdent';
+import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
+
+// Diff SQL is always quoted, never soft-quoted. The soft-quoter is for
+// SQL the user reads (open-table flow, autocomplete inserts) — it
+// emits bare identifiers when they're guaranteed-safe lowercase
+// non-reserved names so the SQL reads naturally. The diff page runs
+// SQL against the live database; any identifier that escapes
+// quoting because of a case-sensitivity gap in the reserved-words
+// list (e.g. mixed-case column names, engine-specific reserved
+// words we don't track) turns into a runtime syntax error. Always
+// quoting closes the gap by construction at the cost of slightly
+// busier preview SQL.
+const ident = quoteIdent;
 
 export type DiffChangeKind =
   | 'create-table'
@@ -167,7 +179,7 @@ function diffColumns(
         schema: source.schema,
         table: source.name,
         label: `Drop column ${name}`,
-        sql: `ALTER TABLE ${tableRef(engine, source.schema, source.name)} DROP COLUMN ${softQuoteIdent(
+        sql: `ALTER TABLE ${tableRef(engine, source.schema, source.name)} DROP COLUMN ${ident(
           name,
           quoteStyleForEngine(engine),
         )};`,
@@ -208,7 +220,7 @@ function diffIndexes(
         schema: source.schema,
         table: source.name,
         label: `Drop index ${name}`,
-        sql: `DROP INDEX ${softQuoteIdent(name, quoteStyleForEngine(engine))};`,
+        sql: `DROP INDEX ${ident(name, quoteStyleForEngine(engine))};`,
       });
     }
   }
@@ -218,16 +230,16 @@ function diffIndexes(
 
 function tableRef(engine: DatabaseEngine, schema: string, table: string): string {
   const style = quoteStyleForEngine(engine);
-  const t = softQuoteIdent(table, style);
+  const t = ident(table, style);
   if (engine === 'sqlite' || !schema) return t;
-  return `${softQuoteIdent(schema, style)}.${t}`;
+  return `${ident(schema, style)}.${t}`;
 }
 
 function buildCreateTable(engine: DatabaseEngine, t: Table): string {
   const style = quoteStyleForEngine(engine);
   const lines: string[] = [];
   for (const c of t.columns) {
-    const parts = [softQuoteIdent(c.name, style), c.data_type];
+    const parts = [ident(c.name, style), c.data_type];
     if (!c.nullable) parts.push('NOT NULL');
     if (c.default) parts.push(`DEFAULT ${c.default}`);
     lines.push('  ' + parts.join(' '));
@@ -235,7 +247,7 @@ function buildCreateTable(engine: DatabaseEngine, t: Table): string {
   if (t.primary_key && t.primary_key.columns.length > 0) {
     lines.push(
       '  PRIMARY KEY (' +
-        t.primary_key.columns.map((c) => softQuoteIdent(c, style)).join(', ') +
+        t.primary_key.columns.map((c) => ident(c, style)).join(', ') +
         ')',
     );
   }
@@ -246,13 +258,13 @@ function buildCreateTable(engine: DatabaseEngine, t: Table): string {
   for (const fk of t.foreign_keys) {
     lines.push(
       '  CONSTRAINT ' +
-        softQuoteIdent(fk.name, style) +
+        ident(fk.name, style) +
         ' FOREIGN KEY (' +
-        fk.columns.map((c) => softQuoteIdent(c, style)).join(', ') +
+        fk.columns.map((c) => ident(c, style)).join(', ') +
         ') REFERENCES ' +
         tableRef(engine, fk.references_schema, fk.references_table) +
         ' (' +
-        fk.references_columns.map((c) => softQuoteIdent(c, style)).join(', ') +
+        fk.references_columns.map((c) => ident(c, style)).join(', ') +
         ')',
     );
   }
@@ -270,7 +282,7 @@ function buildAddColumn(
     'ALTER TABLE',
     tableRef(engine, schema, table),
     'ADD COLUMN',
-    softQuoteIdent(c.name, style),
+    ident(c.name, style),
     c.data_type,
   ];
   if (!c.nullable) parts.push('NOT NULL');
@@ -292,9 +304,9 @@ function buildAlterColumnType(
   const style = quoteStyleForEngine(engine);
   const ref = tableRef(engine, schema, table);
   if (engine === 'mysql' || engine === 'mariadb') {
-    return `ALTER TABLE ${ref} MODIFY COLUMN ${softQuoteIdent(column, style)} ${newType};`;
+    return `ALTER TABLE ${ref} MODIFY COLUMN ${ident(column, style)} ${newType};`;
   }
-  return `ALTER TABLE ${ref} ALTER COLUMN ${softQuoteIdent(column, style)} TYPE ${newType};`;
+  return `ALTER TABLE ${ref} ALTER COLUMN ${ident(column, style)} TYPE ${newType};`;
 }
 
 function buildAlterColumnNullable(
@@ -306,7 +318,7 @@ function buildAlterColumnNullable(
 ): string {
   const style = quoteStyleForEngine(engine);
   const ref = tableRef(engine, schema, table);
-  const colId = softQuoteIdent(column, style);
+  const colId = ident(column, style);
   if (engine === 'mysql' || engine === 'mariadb') {
     // MySQL requires re-stating the full column definition in MODIFY;
     // we don't have the type handy here, so emit a note + best-effort.
@@ -324,6 +336,6 @@ function buildCreateIndex(
   idx: Index,
 ): string {
   const style = quoteStyleForEngine(engine);
-  return `${idx.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX'} ${softQuoteIdent(idx.name, style)} ON ${tableRef(engine, schema, table)} (${idx.columns.map((c) => softQuoteIdent(c, style)).join(', ')});`;
+  return `${idx.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX'} ${ident(idx.name, style)} ON ${tableRef(engine, schema, table)} (${idx.columns.map((c) => ident(c, style)).join(', ')});`;
 }
 

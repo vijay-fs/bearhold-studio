@@ -680,7 +680,7 @@ export function ResultTable({
     exportAs(format, {
       columns: result.columns,
       rows,
-      baseName: editable ? `${editable.schema}.${editable.table}` : 'dbstudio-result',
+      baseName: editable ? `${editable.schema}.${editable.table}` : 'bearhold-result',
     });
   };
 
