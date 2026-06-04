@@ -61,6 +61,7 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { CommandPalette } from '@/components/CommandPalette';
 import { KeyboardShortcutsDialog } from '@/components/KeyboardShortcutsDialog';
+import { UpdateBanner } from '@/components/UpdateBanner';
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const profiles = useConnections((s) => s.profiles);
@@ -304,6 +305,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       </aside>
 
       <main className="scrollbar-hidden flex min-h-0 flex-col overflow-y-auto">
+        <UpdateBanner />
         {children}
       </main>
 

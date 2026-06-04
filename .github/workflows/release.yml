@@ -1,17 +1,21 @@
-# Build dbstudio installers for macOS and Windows. Triggered manually
-# via the Actions tab ("Run workflow") or by pushing a tag that
-# starts with `v` (e.g. `v0.1.0`). The Windows runner is the only
-# way to produce a .msi/.exe — Tauri's WiX/NSIS bundlers need
-# Windows-native tooling and don't cross-compile reliably from
-# macOS or Linux.
+# Build Bearhold Studio installers for macOS and Windows. Triggered
+# manually via the Actions tab ("Run workflow") or by pushing a tag
+# that starts with `v` (e.g. `v0.1.0`).
 #
-# Artifacts upload to the workflow run. For a real release that ships
-# auto-updates, hook up a code-signing cert (Apple Developer ID for
-# .app/.dmg, Windows EV cert for .msi/.exe). Until then the user is
-# bothered by Gatekeeper / SmartScreen on first launch — annoying but
-# not blocking.
+# Auto-updater: the `updater` bundle target produces a compressed
+# update archive + a `.sig` file. We sign with the ed25519 private
+# key stored as the `TAURI_SIGNING_PRIVATE_KEY` GitHub secret. The
+# matching public key lives in `apps/desktop/src-tauri/tauri.conf.json`
+# and is shipped inside the app binary. The app polls
+# `releases/latest/download/latest.json`, which is the manifest job
+# below assembling on every tag push.
+#
+# Code-signing (separate from updater signing — different mechanism):
+# Apple Developer ID + Windows OV/EV certs aren't wired yet, so first
+# launch still triggers Gatekeeper / SmartScreen warnings. Updater
+# signing is independent and works without those certs.
 
-name: Build installers
+name: Release
 
 on:
   workflow_dispatch:
@@ -25,10 +29,6 @@ jobs:
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v5
-      # No `version:` here — pnpm/action-setup picks up the version
-      # from package.json's `packageManager` field. Pinning both at
-      # once raises ERR_PNPM_BAD_PM_VERSION, so we let the lockfile
-      # be the source of truth.
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v5
         with:
@@ -37,14 +37,18 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          # Cache only the desktop crate's build dir; the workspace
-          # itself is too large to cache wholesale on the free tier.
           workspaces: apps/desktop/src-tauri -> ../../target
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
       - name: Build app
         working-directory: apps/desktop
-        run: pnpm tauri build --bundles dmg,app
+        env:
+          # Updater signing — drives the `.sig` file alongside each
+          # updater bundle. Missing in PR builds; missing here would
+          # silently produce an unsigned bundle that clients reject.
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles dmg,app,updater
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -52,6 +56,8 @@ jobs:
           path: |
             target/release/bundle/dmg/*.dmg
             target/release/bundle/macos/*.app
+            target/release/bundle/macos/*.app.tar.gz
+            target/release/bundle/macos/*.app.tar.gz.sig
 
   windows:
     name: Windows (x86_64)
@@ -71,14 +77,80 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build app
         working-directory: apps/desktop
-        # NSIS produces a self-contained .exe installer; MSI is the
-        # WiX-built MSI for enterprise deployment. Build both so the
-        # user can pick whichever suits them.
-        run: pnpm tauri build --bundles nsis,msi
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: pnpm tauri build --bundles nsis,msi,updater
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: windows-x86_64
           path: |
             target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.nsis.zip
+            target/release/bundle/nsis/*.nsis.zip.sig
             target/release/bundle/msi/*.msi
+
+  release:
+    name: Publish release + updater manifest
+    needs: [macos, windows]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-aarch64
+          path: artifacts/macos
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-x86_64
+          path: artifacts/windows
+      - name: Build latest.json updater manifest
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          PUB_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          # The updater pulls each platform's signed archive + reads
+          # the `.sig` file to verify against the embedded pubkey.
+          # URLs follow GitHub's predictable releases/download/<tag>/<name> pattern.
+          REPO="${GITHUB_REPOSITORY}"
+          MAC_ARCHIVE="$(basename artifacts/macos/*.app.tar.gz)"
+          MAC_SIG="$(cat artifacts/macos/*.app.tar.gz.sig)"
+          WIN_ARCHIVE="$(basename artifacts/windows/*.nsis.zip)"
+          WIN_SIG="$(cat artifacts/windows/*.nsis.zip.sig)"
+          cat > latest.json <<JSON
+          {
+            "version": "${VERSION}",
+            "notes": "See the release page for details.",
+            "pub_date": "${PUB_DATE}",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "${MAC_SIG}",
+                "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/${MAC_ARCHIVE}"
+              },
+              "windows-x86_64": {
+                "signature": "${WIN_SIG}",
+                "url": "https://github.com/${REPO}/releases/download/${GITHUB_REF_NAME}/${WIN_ARCHIVE}"
+              }
+            }
+          }
+          JSON
+          cat latest.json
+      - name: Create release + attach artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/macos/*.dmg
+            artifacts/macos/*.app.tar.gz
+            artifacts/macos/*.app.tar.gz.sig
+            artifacts/windows/*.exe
+            artifacts/windows/*.msi
+            artifacts/windows/*.nsis.zip
+            artifacts/windows/*.nsis.zip.sig
+            latest.json
+          generate_release_notes: true

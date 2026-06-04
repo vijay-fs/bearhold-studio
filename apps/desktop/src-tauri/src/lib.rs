@@ -32,6 +32,15 @@ pub fn run() {
             Ok(())
         })
         .plugin(tauri_plugin_shell::init())
+        // Auto-updater. The updater plugin polls the configured
+        // endpoint, verifies bundle signatures against the embedded
+        // public key (`bundle.updater.pubkey` in tauri.conf.json),
+        // and downloads + installs the new build on the user's
+        // request. The matching `process` plugin lets the frontend
+        // call `relaunch()` after install so the new binary takes
+        // over without the user manually closing + reopening.
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::new())
         .invoke_handler(tauri::generate_handler![
             commands::list_engines,

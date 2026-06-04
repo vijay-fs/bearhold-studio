@@ -23,6 +23,7 @@ dbstudio-driver-redis = { path = "../../../services/drivers/redis" }
 tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = { workspace = true }
+tauri-plugin-process = "2"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
