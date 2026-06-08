@@ -164,7 +164,10 @@ function DataDiffInner() {
         api.runQuery(sourceProfile, { sql }),
         api.runQuery(targetProfile, { sql: sqlTarget }),
       ]);
-      const diff = diffData(s, t, pkColumns);
+      const diff = diffData(s, t, pkColumns, {
+        engine: sourceProfile.engine,
+        schemaColumns: sourceTableMeta.columns,
+      });
       setLoad({ kind: 'ok', diff });
     } catch (e: unknown) {
       const err = e as { code?: string; message?: string };
