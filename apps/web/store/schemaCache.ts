@@ -31,19 +31,36 @@ export const useSchemaCache = create<SchemaCacheState>((set, getState) => ({
 
   load: async (profile, force) => {
     const state = getState();
+    // In-flight dedupe applies even when `force` is true. Two
+    // callers asking for a fresh schema "right now" (e.g. the SQL
+    // workspace + the sidebar + a post-DDL onChanged firing in
+    // quick succession) used to each open their own getSchema
+    // round-trip; on engines with strict connection caps (MySQL
+    // `max_connections`) that stacks into a [08004] error. One
+    // in-flight at a time per connection — every concurrent caller
+    // shares the same promise.
+    const pending = state.inFlight[profile.id];
+    if (pending) return pending;
     if (!force) {
       const cached = state.entries[profile.id];
       if (cached) return cached.schema;
-      const pending = state.inFlight[profile.id];
-      if (pending) return pending;
     }
-    const promise = api.getSchema(profile).then((schema) => {
-      set((s) => ({
-        entries: { ...s.entries, [profile.id]: { schema, loadedAt: Date.now() } },
-        inFlight: { ...s.inFlight, [profile.id]: undefined },
-      }));
-      return schema;
-    });
+    const promise = api.getSchema(profile).then(
+      (schema) => {
+        set((s) => ({
+          entries: { ...s.entries, [profile.id]: { schema, loadedAt: Date.now() } },
+          inFlight: { ...s.inFlight, [profile.id]: undefined },
+        }));
+        return schema;
+      },
+      (err) => {
+        // Clear the in-flight slot on failure so the next caller
+        // can retry. Otherwise a transient EOF would lock the cache
+        // into "pending forever" and the UI would never recover.
+        set((s) => ({ inFlight: { ...s.inFlight, [profile.id]: undefined } }));
+        throw err;
+      },
+    );
     set((s) => ({ inFlight: { ...s.inFlight, [profile.id]: promise } }));
     return promise;
   },

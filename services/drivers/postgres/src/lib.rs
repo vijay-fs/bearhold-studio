@@ -63,7 +63,17 @@ impl PostgresDriver {
 
         let url = build_connection_url(profile, &host, port).await?;
         let pool = PgPoolOptions::new()
-            .max_connections(5)
+            // Keep the pool tight. Single-user desktop app talking
+            // to PG servers that may share their connection budget
+            // with other clients (web apps, BI tools, replication).
+            // Two is the realistic working set — one for the active
+            // query, one for the sibling `pg_cancel_backend` route
+            // — and leaves headroom for anyone else on the server.
+            .max_connections(2)
+            // Start empty; sqlx defaults this to 0 already but
+            // pinning it explicitly guards against a future default
+            // change quietly pre-warming connections.
+            .min_connections(0)
             .acquire_timeout(std::time::Duration::from_secs(10))
             // Validate the connection before handing it out. Catches the
             // common case where an SSH tunnel died or the server killed an

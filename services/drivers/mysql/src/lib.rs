@@ -60,7 +60,20 @@ impl MySqlDriver {
 
         let url = build_connection_url(profile, &host, port).await?;
         let pool = MySqlPoolOptions::new()
-            .max_connections(5)
+            // Keep the pool tight. We're a single-user desktop app
+            // talking to MySQL servers that often run with strict
+            // `max_connections` caps (cheap managed instances cap
+            // at 10–30; shared servers even less). Two connections
+            // covers the realistic concurrency — one for the active
+            // query, one for the sibling `KILL QUERY` route — and
+            // leaves headroom for other clients on the same server.
+            // Users who want more can hand-edit; the default has to
+            // be the smallest workable value.
+            .max_connections(2)
+            // Start empty. sqlx defaults `min_connections` to 0
+            // already but we set it explicitly so a future default
+            // change doesn't quietly pre-warm connections.
+            .min_connections(0)
             .acquire_timeout(std::time::Duration::from_secs(10))
             // See the matching note in the Postgres driver.
             .test_before_acquire(true)

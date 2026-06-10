@@ -376,13 +376,18 @@ function SqlPageInner() {
 
   // Re-apply the row-limit selector to whatever table tab is in
   // focus. The user's mental model is "limit is a knob on the table
-  // I'm viewing" — change it, visible result updates. Skip when the
-  // active tab isn't a table tab (free-form queries shouldn't be
-  // rewritten under the user) or when the generated SQL didn't
-  // actually change (e.g. limit was already that value).
+  // I'm viewing" — change it, visible result updates. We track the
+  // previous rowLimit via a ref so the effect skips the initial
+  // mount (which would otherwise pile a second query on top of the
+  // schema load + initial table open and contribute to MySQL's
+  // [08004] too many connections under stress). Subsequent
+  // user-driven limit changes still fire normally.
   const rowLimit = useGridPrefs((s) => s.rowLimit);
+  const prevRowLimitRef = useRef(rowLimit);
   useEffect(() => {
     if (!profile) return;
+    if (prevRowLimitRef.current === rowLimit) return;
+    prevRowLimitRef.current = rowLimit;
     const cur = useSqlTabs.getState().byConnection[profile.id];
     const active = cur?.tabs.find((t) => t.id === cur.activeId);
     if (!active?.tableRef) return;
@@ -395,9 +400,9 @@ function SqlPageInner() {
     if (nextSql === active.sql) return;
     setSql(profile.id, active.id, nextSql);
     setTimeout(() => void onRun(nextSql), 0);
-    // Fires only when the row limit changes (or the connection
-    // switches), not on every render — initial table opens are
-    // handled by the click-table flow in openOrFocusTableTab.
+    // Watching rowLimit + profile.id. The ref above gates against
+    // the on-mount fire; the connection-switch case is benign
+    // because the new connection's active tab has its own SQL.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rowLimit, profile?.id]);
 
@@ -413,15 +418,17 @@ function SqlPageInner() {
     setReconnecting(true);
     try {
       await api.reconnect(profile);
-      // Reconnect drops the pool but our local copy of the schema
-      // (autocomplete, sidebar table list, ER cache) was still the
-      // pre-reconnect snapshot — the user's mental model is "I
-      // reconnected so the latest schema should show up", and the
-      // schema page does this implicitly because it always refetches
-      // on mount. Mirror it here so autocomplete + the sidebar pick
-      // up table renames / new columns / ALTERs that happened on
-      // the other end while the previous pool was idle.
-      await useSchemaCache.getState().load(profile, true).catch(() => {});
+      // We DON'T force-reload the schema here. An earlier attempt
+      // did, but doing the getSchema synchronously after a pool
+      // reset (a) competes with the freshly-running query below
+      // for the still-spinning-up pool slots, and (b) on MySQL
+      // servers with a low `max_connections` it stacks alongside
+      // the not-yet-fully-dropped previous pool and trips
+      // [08004] too many connections. Invalidate the cache instead
+      // and let the next consumer (autocomplete focus, sidebar
+      // remount, schema page nav) lazy-fetch when there's no
+      // contention.
+      useSchemaCache.getState().invalidate(profile.id);
     } catch {
       // disconnect errors are non-fatal — we still want to re-run.
     } finally {
