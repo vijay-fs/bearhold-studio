@@ -24,6 +24,7 @@ tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = { workspace = true }
 tauri-plugin-process = "2"
+tauri-plugin-dialog = "2"
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
@@ -33,3 +34,17 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 async-trait = { workspace = true }
 dashmap = { workspace = true }
+
+# Tool-bundle downloader: HTTP fetch with streamed progress, SHA-256
+# verification of the archive, then extraction. Used by the on-demand
+# tool installer (pg_dump, mysqldump, mongodump, ...).
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "stream",
+] }
+sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+futures-util = "0.3"
+hex = "0.4"
