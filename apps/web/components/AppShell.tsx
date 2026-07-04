@@ -27,6 +27,8 @@ import {
   Info,
   AlertTriangle,
   Wrench,
+  Download,
+  Upload,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -291,30 +293,30 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </nav>
 
         <div className="space-y-0.5 border-t px-2 py-1.5">
-          <Link
+          <SidebarUtilityLink
             href={'/diff' as Route}
-            className={cn(
-              'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
-              pathname === '/diff'
-                ? 'bg-background font-medium text-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-            )}
-          >
-            <GitCompare className="h-3.5 w-3.5 shrink-0" />
-            <span>Schema diff</span>
-          </Link>
-          <Link
+            label="Schema diff"
+            icon={<GitCompare className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/diff'}
+          />
+          <SidebarUtilityLink
             href={'/data-diff' as Route}
-            className={cn(
-              'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
-              pathname === '/data-diff'
-                ? 'bg-background font-medium text-foreground shadow-sm'
-                : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
-            )}
-          >
-            <Table2 className="h-3.5 w-3.5 shrink-0" />
-            <span>Data diff</span>
-          </Link>
+            label="Data diff"
+            icon={<Table2 className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/data-diff'}
+          />
+          <SidebarUtilityLink
+            href={'/export' as Route}
+            label="Export"
+            icon={<Download className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/export'}
+          />
+          <SidebarUtilityLink
+            href={'/import' as Route}
+            label="Import"
+            icon={<Upload className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/import'}
+          />
         </div>
 
         <div className="flex items-center justify-between gap-2 border-t px-5 py-2.5 text-[10px] text-muted-foreground">
@@ -1017,5 +1019,35 @@ function DestructiveConfirm({
         </Button>
       </DialogFooter>
     </>
+  );
+}
+
+/** Shared row style for the sidebar's utility section (schema/data
+ *  diff, export, import). Kept in one place so a style tweak lands
+ *  in every row without a copy-paste pass. */
+function SidebarUtilityLink({
+  href,
+  label,
+  icon,
+  active,
+}: {
+  href: Route;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+}) {
+  return (
+    <Link
+      href={href}
+      className={cn(
+        'flex items-center gap-2 rounded-md px-3 py-1.5 text-xs',
+        active
+          ? 'bg-background font-medium text-foreground shadow-sm'
+          : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground',
+      )}
+    >
+      {icon}
+      <span>{label}</span>
+    </Link>
   );
 }

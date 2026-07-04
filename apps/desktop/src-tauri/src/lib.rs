@@ -1,4 +1,5 @@
 mod commands;
+mod dump;
 mod state;
 mod tools;
 
@@ -42,7 +43,14 @@ pub fn run() {
         // over without the user manually closing + reopening.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
+        // Native file picker for Export (save) and Import (open).
+        // Frontend calls tauri-plugin-dialog's save/open helpers.
+        .plugin(tauri_plugin_dialog::init())
         .manage(AppState::new())
+        // Export/import job registry lives alongside the driver
+        // registry so cancel commands can look up the running child.
+        .manage(std::sync::Arc::new(dump::export::ExportRegistry::new()))
+        .manage(std::sync::Arc::new(dump::import::ImportRegistry::new()))
         .invoke_handler(tauri::generate_handler![
             commands::list_engines,
             commands::test_connection,
@@ -76,6 +84,11 @@ pub fn run() {
             tools::list_tool_bundles,
             tools::install_tool_bundle,
             tools::uninstall_tool_bundle,
+            dump::detect_dump_format,
+            dump::start_export,
+            dump::cancel_export,
+            dump::start_import,
+            dump::cancel_import,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dbstudio");

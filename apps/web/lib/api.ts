@@ -19,6 +19,14 @@ import type {
   RowDelete,
   RowInsert,
 } from './types';
+import type {
+  DumpProbe,
+  ExportOptions,
+  ExportResult,
+  ImportOptions,
+  ImportResult,
+  ToolBundleStatus,
+} from './tools';
 
 const API_BASE = process.env.NEXT_PUBLIC_DBSTUDIO_API ?? 'http://localhost:8080/api/v1';
 
@@ -90,6 +98,45 @@ export const api = {
 
   runQuery(profile: ConnectionProfile, request: QueryRequest): Promise<QueryResult> {
     return invoke('run_query', { profile, request });
+  },
+
+  // ---- Tool bundles ------------------------------------------------
+  // On-demand pg_dump / mysqldump / mongodump / etc. installer. See
+  // apps/desktop/src-tauri/src/tools/. The frontend calls these three
+  // to render the "Download & Install (18 MB)" prompt, kick off a
+  // download, or clean up when the user wants to reclaim disk.
+
+  listToolBundles(): Promise<ToolBundleStatus[]> {
+    return invoke('list_tool_bundles', {});
+  },
+
+  installToolBundle(bundleKey: string): Promise<ToolBundleStatus> {
+    return invoke('install_tool_bundle', { bundleKey });
+  },
+
+  uninstallToolBundle(bundleKey: string): Promise<null> {
+    return invoke('uninstall_tool_bundle', { bundleKey });
+  },
+
+  // ---- Dump format detection --------------------------------------
+  detectDumpFormat(path: string): Promise<DumpProbe> {
+    return invoke('detect_dump_format', { path });
+  },
+
+  // ---- Export -----------------------------------------------------
+  startExport(options: ExportOptions): Promise<ExportResult> {
+    return invoke('start_export', { options });
+  },
+  cancelExport(jobId: string): Promise<boolean> {
+    return invoke('cancel_export', { jobId });
+  },
+
+  // ---- Import -----------------------------------------------------
+  startImport(options: ImportOptions): Promise<ImportResult> {
+    return invoke('start_import', { options });
+  },
+  cancelImport(jobId: string): Promise<boolean> {
+    return invoke('cancel_import', { jobId });
   },
 
   // Single-cell UPDATE via parameterized SQL. Returns rows_affected — callers

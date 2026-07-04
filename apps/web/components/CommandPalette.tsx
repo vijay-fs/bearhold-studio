@@ -15,6 +15,9 @@ import {
   XCircle,
   Table2,
   Bookmark,
+  Download,
+  Upload,
+  GitCompare,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -181,6 +184,30 @@ export function CommandPalette() {
               label="Add connection"
               shortcut="N"
               onSelect={() => go('/connections/new' as Route)}
+            />
+            <PaletteItem
+              icon={<GitCompare className="h-3.5 w-3.5" />}
+              label="Schema diff"
+              keywords={['diff', 'schema', 'compare']}
+              onSelect={() => go('/diff' as Route)}
+            />
+            <PaletteItem
+              icon={<Table2 className="h-3.5 w-3.5" />}
+              label="Data diff"
+              keywords={['diff', 'data', 'rows', 'compare']}
+              onSelect={() => go('/data-diff' as Route)}
+            />
+            <PaletteItem
+              icon={<Download className="h-3.5 w-3.5" />}
+              label="Export database"
+              keywords={['export', 'dump', 'pg_dump', 'mysqldump', 'backup']}
+              onSelect={() => go('/export' as Route)}
+            />
+            <PaletteItem
+              icon={<Upload className="h-3.5 w-3.5" />}
+              label="Import dump"
+              keywords={['import', 'restore', 'pg_restore', 'psql', 'mysql']}
+              onSelect={() => go('/import' as Route)}
             />
           </Command.Group>
 
