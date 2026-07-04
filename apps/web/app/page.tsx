@@ -169,11 +169,14 @@ export default function HomePage() {
     [orderedConnections, meta],
   );
 
-  const recentHistory = useMemo(() => historyEntries.slice(0, 6), [historyEntries]);
+  // 50 is enough for scanning; the History and Snippets pages own
+  // full search/filter. Scrolls within the ActivityPanel's fixed
+  // height so the page footer stays put.
+  const recentHistory = useMemo(() => historyEntries.slice(0, 50), [historyEntries]);
   const recentSnippets = useMemo(() => {
     return [...snippets]
       .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0))
-      .slice(0, 6);
+      .slice(0, 50);
   }, [snippets]);
 
   const connectionsById = useMemo(() => {
@@ -260,20 +263,24 @@ export default function HomePage() {
               </ConnectionSection>
             )}
 
-            <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
-              <ActivityPanel
-                historyEntries={recentHistory}
-                snippetEntries={recentSnippets}
-                connectionsById={connectionsById}
-                onOpenQuery={(profile, sql) =>
-                  loadSqlInWorkspace(router, profile, sql, false)
-                }
-                onOpenSnippet={(profile, sql) =>
-                  loadSqlInWorkspace(router, profile, sql, false)
-                }
-              />
-              <UtilityRail />
-            </div>
+            {/* Activity + Tools stack full-width. Activity is a
+                tabbed panel with a fixed-height scrollable body so
+                the page's total height stays predictable no matter
+                how much history the user has accumulated; Tools is
+                a wide 4-across tile row on md+ so every tool is one
+                click without stealing dashboard height. */}
+            <ActivityPanel
+              historyEntries={recentHistory}
+              snippetEntries={recentSnippets}
+              connectionsById={connectionsById}
+              onOpenQuery={(profile, sql) =>
+                loadSqlInWorkspace(router, profile, sql, false)
+              }
+              onOpenSnippet={(profile, sql) =>
+                loadSqlInWorkspace(router, profile, sql, false)
+              }
+            />
+            <UtilityRail />
           </div>
         )}
       </div>
@@ -583,44 +590,81 @@ function ActivityPanel({
         </p>
       </div>
 
-      {tab === 'queries' ? (
-        historyEntries.length === 0 ? (
-          <EmptyRow label="No queries yet. Run one to see it here." />
+      {/* Fixed-height scroll container so a user with 300 queries in
+          history doesn't push the page's footer off the screen. The
+          scroll bar uses the app-wide thin style so it doesn't dominate
+          the rounded card. h-[22rem] ~ 352px — roughly 8 visible rows,
+          which is the sweet spot for scanning without over-scrolling.*/}
+      <div className="scrollbar-thin -mx-2 h-[22rem] overflow-y-auto px-2">
+        {tab === 'queries' ? (
+          historyEntries.length === 0 ? (
+            <EmptyRow label="No queries yet. Run one to see it here." />
+          ) : (
+            <ul className="space-y-0.5">
+              {historyEntries.map((h) => {
+                const profile = connectionsById.get(h.connectionId);
+                if (!profile) return null;
+                const style = styleFor(profile.engine);
+                return (
+                  <li key={h.id}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenQuery(profile, h.sql)}
+                      className="group flex w-full items-start gap-3 rounded-lg p-2 text-left hover:bg-accent/50"
+                    >
+                      <span className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', style.dot)} />
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-1 font-mono text-[12px] text-foreground/90">
+                          {h.sql.replace(/\s+/g, ' ').trim()}
+                        </p>
+                        <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
+                          <span className="font-medium">{profile.name}</span>
+                          <Dot />
+                          <span>{formatRelative(h.timestamp)}</span>
+                          {typeof h.elapsedMs === 'number' && (
+                            <>
+                              <Dot />
+                              <span>{Math.round(h.elapsedMs)}ms</span>
+                            </>
+                          )}
+                          {h.status === 'error' && (
+                            <>
+                              <Dot />
+                              <span className="text-destructive">failed</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                      <ArrowRight className="mt-1 h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          )
+        ) : snippetEntries.length === 0 ? (
+          <EmptyRow label="No snippets yet. Save one from the SQL editor." />
         ) : (
           <ul className="space-y-0.5">
-            {historyEntries.map((h) => {
-              const profile = connectionsById.get(h.connectionId);
+            {snippetEntries.map((s) => {
+              const profile = connectionsById.get(s.connectionId);
               if (!profile) return null;
-              const style = styleFor(profile.engine);
               return (
-                <li key={h.id}>
+                <li key={s.id}>
                   <button
                     type="button"
-                    onClick={() => onOpenQuery(profile, h.sql)}
+                    onClick={() => onOpenSnippet(profile, s.sql)}
                     className="group flex w-full items-start gap-3 rounded-lg p-2 text-left hover:bg-accent/50"
                   >
-                    <span className={cn('mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full', style.dot)} />
+                    <Bookmark className="mt-1 h-3 w-3 shrink-0 text-muted-foreground" />
                     <div className="min-w-0 flex-1">
-                      <p className="line-clamp-1 font-mono text-[12px] text-foreground/90">
-                        {h.sql.replace(/\s+/g, ' ').trim()}
+                      <p className="line-clamp-1 text-[13px] font-medium">{s.name}</p>
+                      <p className="mt-0.5 line-clamp-1 font-mono text-[11px] text-muted-foreground">
+                        {s.sql.replace(/\s+/g, ' ').trim()}
                       </p>
-                      <div className="mt-0.5 flex items-center gap-2 text-[10px] text-muted-foreground">
-                        <span className="font-medium">{profile.name}</span>
-                        <Dot />
-                        <span>{formatRelative(h.timestamp)}</span>
-                        {typeof h.elapsedMs === 'number' && (
-                          <>
-                            <Dot />
-                            <span>{Math.round(h.elapsedMs)}ms</span>
-                          </>
-                        )}
-                        {h.status === 'error' && (
-                          <>
-                            <Dot />
-                            <span className="text-destructive">failed</span>
-                          </>
-                        )}
-                      </div>
+                      <p className="mt-0.5 text-[10px] text-muted-foreground">
+                        {profile.name} · {formatRelative(s.updatedAt ?? s.createdAt)}
+                      </p>
                     </div>
                     <ArrowRight className="mt-1 h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
                   </button>
@@ -628,38 +672,8 @@ function ActivityPanel({
               );
             })}
           </ul>
-        )
-      ) : snippetEntries.length === 0 ? (
-        <EmptyRow label="No snippets yet. Save one from the SQL editor." />
-      ) : (
-        <ul className="space-y-0.5">
-          {snippetEntries.map((s) => {
-            const profile = connectionsById.get(s.connectionId);
-            if (!profile) return null;
-            return (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => onOpenSnippet(profile, s.sql)}
-                  className="group flex w-full items-start gap-3 rounded-lg p-2 text-left hover:bg-accent/50"
-                >
-                  <Bookmark className="mt-1 h-3 w-3 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <p className="line-clamp-1 text-[13px] font-medium">{s.name}</p>
-                    <p className="mt-0.5 line-clamp-1 font-mono text-[11px] text-muted-foreground">
-                      {s.sql.replace(/\s+/g, ' ').trim()}
-                    </p>
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {profile.name} · {formatRelative(s.updatedAt ?? s.createdAt)}
-                    </p>
-                  </div>
-                  <ArrowRight className="mt-1 h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+        )}
+      </div>
     </section>
   );
 }
@@ -720,40 +734,44 @@ function Dot() {
 
 function UtilityRail() {
   return (
-    <div className="rounded-2xl border bg-card p-5 shadow-sm">
-      <p className="mb-3 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-        Tools
-      </p>
-      <div className="grid grid-cols-2 gap-2">
+    <section className="rounded-2xl border bg-card p-5 shadow-sm">
+      <div className="mb-4 flex items-center justify-between">
+        <h2 className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+          Tools
+        </h2>
+        <div className="flex items-center gap-1.5 rounded-md bg-muted/40 px-2.5 py-1 text-[11px] text-muted-foreground">
+          <Command className="h-3 w-3" />
+          <span>Command palette</span>
+          <PlatformShortcut keys={['K']} />
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <ToolTile
           href="/diff"
           icon={<GitCompare className="h-4 w-4" />}
           label="Schema diff"
+          description="Compare + generate ALTER SQL"
         />
         <ToolTile
           href="/data-diff"
           icon={<Rows3 className="h-4 w-4" />}
           label="Data diff"
+          description="Row-level compare + sync"
         />
         <ToolTile
           href="/export"
           icon={<Download className="h-4 w-4" />}
           label="Export"
+          description="pg_dump / mysqldump"
         />
         <ToolTile
           href="/import"
           icon={<Upload className="h-4 w-4" />}
           label="Import"
+          description="Restore a dump"
         />
       </div>
-      <div className="mt-4 flex items-center justify-between rounded-lg bg-muted/40 px-3 py-2 text-[11px] text-muted-foreground">
-        <span className="flex items-center gap-1.5">
-          <Command className="h-3 w-3" />
-          Command palette
-        </span>
-        <PlatformShortcut keys={['K']} />
-      </div>
-    </div>
+    </section>
   );
 }
 
@@ -761,20 +779,28 @@ function ToolTile({
   href,
   icon,
   label,
+  description,
 }: {
   href: string;
   icon: React.ReactNode;
   label: string;
+  description: string;
 }) {
   return (
     <Link
       href={href}
-      className="group flex flex-col items-start gap-2 rounded-lg border p-3 transition hover:border-primary/40 hover:bg-accent/40"
+      className="group flex items-start gap-3 rounded-xl border bg-background p-3 transition hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
     >
-      <span className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-primary/10 text-primary transition group-hover:bg-primary/15">
+      <span className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary transition group-hover:bg-primary/15">
         {icon}
       </span>
-      <span className="text-[12px] font-medium">{label}</span>
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-semibold">{label}</p>
+        <p className="mt-0.5 line-clamp-1 text-[11px] text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      <ArrowRight className="mt-2 h-3 w-3 shrink-0 text-muted-foreground opacity-0 transition group-hover:translate-x-0.5 group-hover:opacity-100" />
     </Link>
   );
 }
