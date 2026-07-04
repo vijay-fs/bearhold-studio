@@ -16,21 +16,21 @@ const ISO_DATETIME_RE =
 
 /**
  * Normalize a datetime-shaped string for the given engine. MySQL +
- * MariaDB DATETIME / TIMESTAMP columns reject the `T` separator and
+ * TIMESTAMP columns reject the `T` separator and
  * the trailing timezone suffix, so we translate `2026-06-05T07:15:00+00:00`
  * into `2026-06-05 07:15:00`. The translation drops the offset under
  * the assumption that values flow in already-UTC; mixing local-time
  * columns with offset-bearing source data is a schema issue this
  * helper can't paper over.
  *
- * Postgres, SQLite, and Cockroach accept the ISO form natively, so
- * the input is returned unchanged for those.
+ * Postgres and SQLite accept the ISO form natively, so the input is
+ * returned unchanged for those.
  */
 function normalizeDatetimeForEngine(
   s: string,
   engine: DatabaseEngine | undefined,
 ): string {
-  if (engine !== 'mysql' && engine !== 'mariadb') return s;
+  if (engine !== 'mysql') return s;
   const m = ISO_DATETIME_RE.exec(s);
   if (!m) return s;
   const [, date, time, frac] = m;
@@ -38,18 +38,24 @@ function normalizeDatetimeForEngine(
 }
 
 /** Escape the inside of a single-quoted SQL string literal. Always
- *  double up embedded single quotes. For MySQL/MariaDB the default
+ *  double up embedded single quotes. For MySQL the default
  *  `sql_mode` interprets backslash escapes (`\n`, `\t`, `\\`, etc.)
  *  inside string literals, so a literal backslash in source data
  *  gets re-decoded on paste; doubling the backslash side-steps that.
  *  Postgres and SQLite treat `\` as a literal byte in plain `'...'`
- *  strings (PG only escapes inside `E'...'`), so we leave them. */
+ *  strings (PG only escapes inside `E'...'`), so we leave them.
+ *
+ *  When the caller has probed the MySQL server and knows
+ *  `NO_BACKSLASH_ESCAPES` is in sql_mode, we DON'T double the
+ *  backslash — the server treats it as literal already, so doubling
+ *  would corrupt the value. */
 function escapeStringForEngine(
   s: string,
   engine: DatabaseEngine | undefined,
+  opts: { noBackslashEscapes?: boolean } = {},
 ): string {
   const quoted = s.replace(/'/g, "''");
-  if (engine === 'mysql' || engine === 'mariadb') {
+  if (engine === 'mysql' && !opts.noBackslashEscapes) {
     return quoted.replace(/\\/g, '\\\\');
   }
   return quoted;
@@ -68,9 +74,16 @@ function escapeStringForEngine(
  * - everything else (objects/arrays from jsonb/json columns) →
  *   JSON-stringified + quoted
  */
+export interface SqlLiteralOptions {
+  /** Set by callers that have probed the MySQL server and detected
+   *  NO_BACKSLASH_ESCAPES in sql_mode. Suppresses backslash-doubling. */
+  noBackslashEscapes?: boolean;
+}
+
 export function formatSqlLiteral(
   value: unknown,
   engine?: DatabaseEngine,
+  opts: SqlLiteralOptions = {},
 ): string {
   if (value === null || value === undefined) return 'NULL';
   if (typeof value === 'number') {
@@ -82,10 +95,7 @@ export function formatSqlLiteral(
   }
   if (typeof value === 'string') {
     const reshaped = normalizeDatetimeForEngine(value, engine);
-    return `'${escapeStringForEngine(reshaped, engine)}'`;
+    return `'${escapeStringForEngine(reshaped, engine, opts)}'`;
   }
-  // Objects, arrays — JSON-encode. We don't normalize datetime
-  // strings inside JSON (the engine's JSON column doesn't care, and
-  // touching the JSON body would corrupt user data).
-  return `'${escapeStringForEngine(JSON.stringify(value), engine)}'`;
+  return `'${escapeStringForEngine(JSON.stringify(value), engine, opts)}'`;
 }

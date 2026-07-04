@@ -9,16 +9,12 @@ pub enum DatabaseEngine {
     Postgres,
     #[serde(rename = "mysql")]
     MySql,
-    #[serde(rename = "mariadb")]
-    MariaDb,
     Sqlite,
     #[serde(rename = "mongodb")]
     MongoDb,
     Redis,
     Cassandra,
     Neo4j,
-    #[serde(rename = "cockroachdb")]
-    CockroachDb,
     #[serde(rename = "couchdb")]
     CouchDb,
 }
@@ -105,8 +101,8 @@ pub struct ConnectionProfile {
 impl ConnectionProfile {
     pub fn new(name: impl Into<String>, engine: DatabaseEngine) -> Self {
         let (default_port, default_db) = match engine {
-            DatabaseEngine::Postgres | DatabaseEngine::CockroachDb => (5432, "postgres"),
-            DatabaseEngine::MySql | DatabaseEngine::MariaDb => (3306, ""),
+            DatabaseEngine::Postgres => (5432, "postgres"),
+            DatabaseEngine::MySql => (3306, ""),
             DatabaseEngine::MongoDb => (27017, "admin"),
             DatabaseEngine::Redis => (6379, "0"),
             DatabaseEngine::Cassandra => (9042, ""),

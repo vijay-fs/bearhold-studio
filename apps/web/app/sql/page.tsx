@@ -56,7 +56,7 @@ SELECT now(), version();
  *  uses this to decide whether to qualify a table reference in `insertText`,
  *  so the user doesn't accept a suggestion that the server can't resolve. */
 function defaultSchemaFor(profile: { engine: string; database: string }): string {
-  if (profile.engine === 'mysql' || profile.engine === 'mariadb') return profile.database;
+  if (profile.engine === 'mysql') return profile.database;
   if (profile.engine === 'sqlite') return 'main';
   return 'public';
 }

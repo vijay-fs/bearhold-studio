@@ -6,18 +6,14 @@
 // engine's flavour of EXPLAIN and hands the result to this component.
 // Each engine speaks a different dialect:
 //
-//   - Postgres / CockroachDB: `EXPLAIN (ANALYZE, BUFFERS, VERBOSE,
-//     FORMAT JSON)` returns a structured JSON tree with planned vs. actual
-//     row counts, per-node timing, and buffer-hit/read stats.
+//   - Postgres: `EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON)` returns
+//     a structured JSON tree with planned vs. actual row counts, per-node
+//     timing, and buffer-hit/read stats.
 //
 //   - MySQL: `EXPLAIN ANALYZE` (8.0.18+) returns an already-formatted text
 //     tree with cost + actual-time annotations on each line. We parse the
 //     indent levels into a node tree so we can lay it out, highlight
 //     mis-estimates, and reuse the same node-row UI as PG.
-//
-//   - MariaDB: `EXPLAIN ANALYZE` exists but returns tabular rows
-//     (`r_rows`, `r_loops`, ...). We render it as a typed table — there's
-//     no real tree structure to extract per-row.
 //
 //   - SQLite: `EXPLAIN QUERY PLAN` returns `(id, parent, notused, detail)`
 //     rows; we rebuild the tree from the parent links. No timings — SQLite
@@ -113,10 +109,10 @@ interface PlanViewerProps {
 }
 
 export function PlanViewer({ result, engine }: PlanViewerProps) {
-  if (engine === 'postgres' || engine === 'cockroachdb') {
+  if (engine === 'postgres') {
     return <PostgresPlan result={result} />;
   }
-  if (engine === 'mysql' || engine === 'mariadb') {
+  if (engine === 'mysql') {
     return <MysqlPlan result={result} />;
   }
   if (engine === 'sqlite') {
@@ -394,12 +390,12 @@ function buildBufferStat(node: PgPlanNode): string | null {
 export function buildExplainSql(engine: DatabaseEngine, sql: string): string | null {
   const trimmed = sql.trim().replace(/;\s*$/, '');
   if (!trimmed) return null;
-  if (engine === 'postgres' || engine === 'cockroachdb') {
+  if (engine === 'postgres') {
     return `EXPLAIN (ANALYZE, BUFFERS, VERBOSE, FORMAT JSON) ${trimmed}`;
   }
-  if (engine === 'mysql' || engine === 'mariadb') {
-    // MySQL 8.0.18+ returns a text tree; MariaDB 10.1+ returns tabular rows
-    // with r_rows / r_loops columns. The renderer detects the shape.
+  if (engine === 'mysql') {
+    // MySQL 8.0.18+ returns a text tree with cost + actual-time
+    // annotations. The renderer parses the indent structure into a node tree.
     return `EXPLAIN ANALYZE ${trimmed}`;
   }
   if (engine === 'sqlite') {
@@ -410,16 +406,10 @@ export function buildExplainSql(engine: DatabaseEngine, sql: string): string | n
 
 /** True for engines that currently support the in-app EXPLAIN viewer. */
 export function explainSupportedFor(engine: DatabaseEngine): boolean {
-  return (
-    engine === 'postgres' ||
-    engine === 'cockroachdb' ||
-    engine === 'mysql' ||
-    engine === 'mariadb' ||
-    engine === 'sqlite'
-  );
+  return engine === 'postgres' || engine === 'mysql' || engine === 'sqlite';
 }
 
-// --- MySQL / MariaDB -----------------------------------------------------
+// --- MySQL --------------------------------------------------------------
 
 interface MyPlanNode {
   label: string;
@@ -501,8 +491,15 @@ function MysqlPlan({ result }: { result: QueryResult }) {
       </div>
     );
   }
-  // MariaDB tabular form: render the columns as a typed stats grid.
-  return <MariadbTabular result={result} />;
+  // Unexpected shape (MySQL EXPLAIN ANALYZE always returns the
+  // single-column text tree). Fall back to a raw dump of the rows.
+  return (
+    <div className="h-full overflow-auto p-3">
+      <pre className="whitespace-pre font-mono text-[11px] leading-snug">
+        {JSON.stringify(result.rows, null, 2)}
+      </pre>
+    </div>
+  );
 }
 
 interface MysqlNodeProps {
@@ -606,53 +603,6 @@ function MysqlNode({ node, totalActualMs, depth, initiallyOpen }: MysqlNodeProps
           ))}
         </div>
       )}
-    </div>
-  );
-}
-
-/** MariaDB's `EXPLAIN ANALYZE` (and `ANALYZE`) return tabular rows. We
- *  render them as a compact stats table — one row per access plan entry —
- *  with the columns the user actually reads (rows planned vs r_rows, key
- *  used, Extra). */
-function MariadbTabular({ result }: { result: QueryResult }) {
-  if (result.rows.length === 0) {
-    return (
-      <p className="p-4 text-xs text-muted-foreground">
-        EXPLAIN returned no rows.
-      </p>
-    );
-  }
-  return (
-    <div className="h-full overflow-auto">
-      <table className="w-full border-collapse text-[11px]">
-        <thead className="sticky top-0 bg-muted/60 text-left">
-          <tr>
-            {result.columns.map((c) => (
-              <th
-                key={c.name}
-                className="border-b px-2 py-1.5 font-medium text-muted-foreground"
-              >
-                {c.name}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {result.rows.map((row, i) => (
-            <tr key={i} className="border-b last:border-b-0 hover:bg-accent/30">
-              {row.map((cell, j) => (
-                <td key={j} className="px-2 py-1 align-top font-mono">
-                  {cell == null ? (
-                    <span className="text-muted-foreground/60">NULL</span>
-                  ) : (
-                    String(cell)
-                  )}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }

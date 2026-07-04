@@ -13,8 +13,8 @@ export interface Column {
   comment?: string | null;
   /** Set when the column has a fixed list of allowed string values
    *  (Postgres user-defined enum). Drives the Insert dialog's enum
-   *  picker. MySQL/MariaDB enum columns leave this undefined — their
-   *  options can be parsed out of `data_type` directly. */
+   *  picker. MySQL enum columns leave this undefined — their options
+   *  can be parsed out of `data_type` directly. */
   enum_options?: string[] | null;
 }
 

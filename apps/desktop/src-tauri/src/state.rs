@@ -38,12 +38,8 @@ impl AppState {
     /// `None`; commands map this to `DbError::Unsupported`.
     pub fn driver_for(&self, engine: DatabaseEngine) -> Option<Arc<dyn Driver>> {
         match engine {
-            DatabaseEngine::Postgres | DatabaseEngine::CockroachDb => {
-                Some(self.postgres.clone() as Arc<dyn Driver>)
-            }
-            DatabaseEngine::MySql | DatabaseEngine::MariaDb => {
-                Some(self.mysql.clone() as Arc<dyn Driver>)
-            }
+            DatabaseEngine::Postgres => Some(self.postgres.clone() as Arc<dyn Driver>),
+            DatabaseEngine::MySql => Some(self.mysql.clone() as Arc<dyn Driver>),
             DatabaseEngine::Sqlite => Some(self.sqlite.clone() as Arc<dyn Driver>),
             _ => None,
         }

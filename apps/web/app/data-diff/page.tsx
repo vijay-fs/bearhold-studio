@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/button';
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useConnections } from '@/store/connections';
 import { useSchemaCache } from '@/store/schemaCache';
+import { useServerInfoCache } from '@/store/serverInfoCache';
 import { api } from '@/lib/api';
 import {
   ENGINE_LABELS,
@@ -53,6 +54,8 @@ type ResultTab = 'inserts' | 'updates' | 'deletes' | 'sql';
 function DataDiffInner() {
   const profiles = useConnections((s) => s.profiles);
   const loadSchema = useSchemaCache((s) => s.load);
+  const loadServerInfo = useServerInfoCache((s) => s.load);
+  const serverInfoBy = useServerInfoCache((s) => s.entries);
 
   const [sourceId, setSourceId] = useState('');
   const [targetId, setTargetId] = useState('');
@@ -90,6 +93,10 @@ function DataDiffInner() {
     void loadSchema(sourceProfile)
       .then(setSourceSchemas)
       .catch(() => setSourceSchemas(null));
+    // Warm the server-info cache so the sync-SQL memo has version
+    // available by the time it fires. Errors (NoSQL Unsupported) are
+    // swallowed inside the cache.
+    void loadServerInfo(sourceProfile);
   }, [sourceProfile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
@@ -101,6 +108,7 @@ function DataDiffInner() {
     void loadSchema(targetProfile)
       .then(setTargetSchemas)
       .catch(() => setTargetSchemas(null));
+    void loadServerInfo(targetProfile);
   }, [targetProfile?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // When source table changes, seed target table with the same name
@@ -182,14 +190,21 @@ function DataDiffInner() {
 
   const sync = useMemo(() => {
     if (load.kind !== 'ok' || !sourceProfile || !sourceTableMeta) return null;
+    // writeSideVersion is the version of whichever side actually
+    // receives the writes. When direction is source→target we're
+    // writing to source; when reversed we're writing to target.
+    const writeProfile = direction === 'source-to-target' ? sourceProfile : targetProfile;
+    const writeVersion = writeProfile
+      ? serverInfoBy[writeProfile.id]?.version ?? undefined
+      : undefined;
     return buildSyncStatements(
       sourceProfile.engine,
       sourceTableMeta.schema,
       sourceTableMeta.name,
       load.diff,
-      { direction },
+      { direction, writeSideVersion: writeVersion },
     );
-  }, [load, sourceProfile, sourceTableMeta, direction]);
+  }, [load, sourceProfile, sourceTableMeta, direction, targetProfile, serverInfoBy]);
 
   const applySync = async () => {
     if (!sync || !sourceProfile) return;

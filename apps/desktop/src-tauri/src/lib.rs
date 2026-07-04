@@ -1,5 +1,6 @@
 mod commands;
 mod state;
+mod tools;
 
 pub use state::AppState;
 
@@ -46,6 +47,8 @@ pub fn run() {
             commands::list_engines,
             commands::test_connection,
             commands::get_schema,
+            commands::get_server_info,
+            commands::dry_run_statements,
             commands::run_query,
             commands::set_secret,
             commands::has_secret,
@@ -70,6 +73,9 @@ pub fn run() {
             commands::redis_key_details,
             commands::redis_delete,
             commands::redis_disconnect,
+            tools::list_tool_bundles,
+            tools::install_tool_bundle,
+            tools::uninstall_tool_bundle,
         ])
         .run(tauri::generate_context!())
         .expect("error while running dbstudio");

@@ -84,7 +84,7 @@ function classifyColumn(dataType: string, engine: DatabaseEngine): LogicalType {
   // Datetime family — PG `timestamp{tz}` / `date` / `time` /
   // `interval`, MySQL `datetime` / `timestamp` / `date` / `time` /
   // `year`, SQLite stores these as TEXT but `datetime` is a common
-  // declared affinity, Cockroach mirrors PG.
+  // declared affinity.
   if (
     t.startsWith('timestamp') ||
     t.startsWith('datetime') ||
@@ -101,9 +101,9 @@ function classifyColumn(dataType: string, engine: DatabaseEngine): LogicalType {
 
   // Boolean — PG `boolean`/`bool`, MySQL `tinyint(1)` is the de
   // facto bool surface (`BOOL` / `BOOLEAN` are TINYINT(1) aliases),
-  // SQLite stores as INTEGER 0/1, Cockroach is `bool`.
+  // SQLite stores as INTEGER 0/1.
   if (t === 'boolean' || t === 'bool') return 'boolean';
-  if ((engine === 'mysql' || engine === 'mariadb') && t === 'tinyint(1)') {
+  if (engine === 'mysql' && t === 'tinyint(1)') {
     return 'boolean';
   }
 
@@ -111,7 +111,7 @@ function classifyColumn(dataType: string, engine: DatabaseEngine): LogicalType {
   // `json` as a declared affinity (stored as TEXT but apps tag it).
   if (t === 'json' || t === 'jsonb') return 'json';
 
-  // Binary — PG `bytea`, MySQL/MariaDB `blob` / `varbinary` /
+  // Binary — PG `bytea`, MySQL `blob` / `varbinary` /
   // `binary` / `tinyblob` etc., SQLite `blob`. We compare as
   // strings since drivers emit hex / base64; downstream callers
   // can pretty-print.
@@ -402,11 +402,5 @@ export function diffData(
  *  pass. The UI uses this to disable the target picker entries
  *  that don't match the source engine. */
 export function engineCanDiff(engine: string): boolean {
-  return (
-    engine === 'postgres' ||
-    engine === 'mysql' ||
-    engine === 'mariadb' ||
-    engine === 'sqlite' ||
-    engine === 'cockroachdb'
-  );
+  return engine === 'postgres' || engine === 'mysql' || engine === 'sqlite';
 }

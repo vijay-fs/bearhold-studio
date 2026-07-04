@@ -1,4 +1,4 @@
-//! MySQL/MariaDB schema introspection via `information_schema`.
+//! MySQL schema introspection via `information_schema`.
 //!
 //! Returns the engine-agnostic `Schema` shape so the ER diagram works
 //! unchanged. Filters to the currently-selected `database` (MySQL conflates
@@ -43,7 +43,7 @@ pub async fn load_schema(pool: &MySqlPool, database: &str) -> Result<Schema> {
                 default: col.default,
                 position: col.position,
                 comment: None,
-                // MySQL/MariaDB stores enum literals inline in the column
+                // MySQL stores enum literals inline in the column
                 // type (`enum('a','b','c')`), so the frontend can parse
                 // them directly without a side-channel options list.
                 enum_options: None,

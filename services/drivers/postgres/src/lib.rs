@@ -12,9 +12,10 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dbstudio_core::{
     secrets::{self, Slot},
+    server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
-    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult,
-    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
+    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, LintOutcome, LintResult,
+    QueryRequest, QueryResult, ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
 };
 use sqlx::{
     postgres::{PgPool, PgPoolOptions, Postgres},
@@ -425,6 +426,39 @@ impl Driver for PostgresDriver {
         Ok(())
     }
 
+    async fn server_info(&self, profile: &ConnectionProfile) -> Result<ServerInfo> {
+        let pool = self.pool_for(profile).await?;
+        // `SHOW server_version` returns the human-readable version
+        // (`16.4 (Debian ...)`). `server_version_num` gives us the
+        // numeric form (`160004`) which is simpler to gate on, but we
+        // fetch both — the raw string goes to the UI, the numeric
+        // gives us robust major/minor without parsing vendor decoration.
+        let raw: String = sqlx::query_scalar("SHOW server_version")
+            .fetch_one(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        let num: String = sqlx::query_scalar("SHOW server_version_num")
+            .fetch_one(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        // server_version_num is `MMmmpp` up to PG9, then `MMmmss` from
+        // PG10+ (single-digit minor, patch fills the last two digits).
+        // For our capability gates only major matters.
+        let numeric: u32 = num.parse().unwrap_or(0);
+        let major = if numeric >= 100000 {
+            Some(numeric / 10000)
+        } else {
+            Some(numeric / 10000)
+        };
+        let minor = Some((numeric / 100) % 100);
+        Ok(ServerInfo {
+            major,
+            minor,
+            raw,
+            flags: ServerFlags::default(),
+        })
+    }
+
     async fn execute(
         &self,
         profile: &ConnectionProfile,
@@ -590,5 +624,47 @@ impl Driver for PostgresDriver {
         // through it.
         self.tunnels.remove(&profile.id);
         Ok(())
+    }
+
+    async fn dry_run(
+        &self,
+        profile: &ConnectionProfile,
+        statements: Vec<String>,
+    ) -> Result<Vec<LintResult>> {
+        let pool = self.pool_for(profile).await?;
+        let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
+        let mut out = Vec::with_capacity(statements.len());
+        for (index, sql) in statements.iter().enumerate() {
+            // Savepoint per statement so a rejected one doesn't
+            // taint the outer transaction — subsequent lints still
+            // run against a clean state.
+            let sp = format!("bearhold_lint_{index}");
+            sqlx::query(&format!("SAVEPOINT {sp}"))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_error)?;
+            let outcome = match sqlx::query(sql).execute(&mut *tx).await {
+                Ok(_) => {
+                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(map_sqlx_error)?;
+                    LintOutcome::Ok
+                }
+                Err(e) => {
+                    let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
+                        .execute(&mut *tx)
+                        .await;
+                    LintOutcome::Fail {
+                        error: format!("{e}"),
+                    }
+                }
+            };
+            out.push(LintResult { index, outcome });
+        }
+        // Outer rollback: everything is unwound already, but this
+        // catches any escaped savepoint state.
+        let _ = tx.rollback().await;
+        Ok(out)
     }
 }

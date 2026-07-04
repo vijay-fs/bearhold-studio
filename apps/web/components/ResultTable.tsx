@@ -244,7 +244,7 @@ type ApplyState =
 /** What kind of input we should render for a given column's data_type.
  *  Drives both the visual control (number input, date picker, enum select)
  *  and the value coercion at insert time. Detection is dialect-aware:
- *  MySQL/MariaDB enums show up as `enum('a','b','c')` literals so we can
+ *  MySQL enums show up as `enum('a','b','c')` literals so we can
  *  parse the options; Postgres enums show up as the enum type name only
  *  (introspection doesn't fetch the option list yet), so they fall back
  *  to a plain text input. */
@@ -260,7 +260,7 @@ type InsertFieldKind =
   | { kind: 'uuid' }
   | { kind: 'text'; maxLength?: number };
 
-/** Extract the literal options from a MySQL/MariaDB `enum('a','b','c')` or
+/** Extract the literal options from a MySQL `enum('a','b','c')` or
  *  `set('a','b')` declaration. Tolerates the SQL escape `''` for an
  *  embedded single quote inside a literal. */
 function parseEnumOptions(rawType: string): string[] {
@@ -1619,8 +1619,8 @@ function ResultContextMenu({
    *  for a name. */
   tableName: string | null;
   /** Drives identifier-quote style for the "Copy as INSERT" output.
-   *  null falls back to ANSI double-quotes — only safe for PG / SQLite
-   *  / Cockroach. MySQL/MariaDB pastes fail without backticks. */
+   *  null falls back to ANSI double-quotes — only safe for PG /
+   *  SQLite. MySQL pastes fail without backticks. */
   engine: ConnectionProfile['engine'] | null;
   onClose: () => void;
 }) {
@@ -2369,7 +2369,7 @@ function coerceInsertValue(d: InsertDraft): unknown {
 // ---- SQL preview strings ------------------------------------------------
 
 function quoteFor(engine: ConnectionProfile['engine'], name: string): string {
-  if (engine === 'mysql' || engine === 'mariadb') {
+  if (engine === 'mysql') {
     return `\`${name.replace(/`/g, '``')}\``;
   }
   return `"${name.replace(/"/g, '""')}"`;
@@ -2377,7 +2377,7 @@ function quoteFor(engine: ConnectionProfile['engine'], name: string): string {
 
 function tableRefFor(editable: EditableConfig): string {
   const engine = editable.profile.engine;
-  if (engine === 'mysql' || engine === 'mariadb') {
+  if (engine === 'mysql') {
     if (!editable.schema || editable.schema === editable.profile.database) {
       return quoteFor(engine, editable.table);
     }

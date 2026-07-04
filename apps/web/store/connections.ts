@@ -92,7 +92,7 @@ export function newProfile(engine: DatabaseEngine = 'postgres'): ConnectionProfi
     };
   }
   const defaultPort =
-    engine === 'mysql' || engine === 'mariadb'
+    engine === 'mysql'
       ? 3306
       : engine === 'mongodb'
         ? 27017

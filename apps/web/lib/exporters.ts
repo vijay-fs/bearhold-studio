@@ -84,8 +84,8 @@ export function toJSONChunks({
 const sqlLiteral = formatSqlLiteral;
 
 /** Chunked SQL writer — one INSERT statement per chunk. The `engine`
- *  drives identifier quoting: backticks for MySQL/MariaDB, ANSI
- *  double-quotes for Postgres/SQLite/Cockroach. The previous version
+ *  drives identifier quoting: backticks for MySQL, ANSI double-quotes
+ *  for Postgres/SQLite. The previous version
  *  always emitted ANSI quotes which MySQL rejects unless `ANSI_QUOTES`
  *  is enabled — so a paste from one MySQL into another would fail
  *  with `you have an error in your SQL syntax near '"col_name"'`.

@@ -5,6 +5,11 @@
 
 import { softQuoteIdent, quoteStyleForEngine } from './sqlIdent';
 import type { DatabaseEngine } from './types';
+import {
+  capabilities,
+  unknownVersion,
+  type EngineVersion,
+} from './engineVersion';
 
 /** Schema-qualified table reference, engine-correct. Mirrors the
  *  pattern used by buildSelectStarSql — SQLite has no real schemas so
@@ -63,23 +68,32 @@ export function buildDropColumn(
   )};`;
 }
 
-/** MySQL/MariaDB pre-8.0 needed `CHANGE COLUMN old new TYPE`; modern
- *  MySQL (8.0+) and MariaDB (10.5+) accept `RENAME COLUMN old TO new`
- *  just like Postgres/SQLite. We emit the modern form everywhere — if
- *  someone's pointed at an ancient MySQL, the engine error will make
- *  the issue obvious and they can hand-write the CHANGE COLUMN. */
+/** MySQL pre-8.0 needed `CHANGE COLUMN old new TYPE`; modern MySQL
+ *  (8.0+) accepts `RENAME COLUMN old TO new` just like Postgres and
+ *  SQLite. Version-aware: on old MySQL we fall back to CHANGE COLUMN,
+ *  which needs the type restated — the caller must pass it. */
 export function buildRenameColumn(
   engine: DatabaseEngine,
   schema: string,
   table: string,
   oldName: string,
   newName: string,
+  opts: { version?: EngineVersion; dataType?: string } = {},
 ): string {
   const style = quoteStyleForEngine(engine);
-  return `ALTER TABLE ${tableRef(engine, schema, table)} RENAME COLUMN ${softQuoteIdent(
-    oldName,
-    style,
-  )} TO ${softQuoteIdent(newName, style)};`;
+  const caps = capabilities(opts.version ?? unknownVersion(engine));
+  const ref = tableRef(engine, schema, table);
+  const oldId = softQuoteIdent(oldName, style);
+  const newId = softQuoteIdent(newName, style);
+  if (!caps.renameColumnSyntax && engine === 'mysql') {
+    if (!opts.dataType) {
+      throw new Error(
+        'This MySQL version needs CHANGE COLUMN, which requires the column data type. Pass opts.dataType.',
+      );
+    }
+    return `ALTER TABLE ${ref} CHANGE COLUMN ${oldId} ${newId} ${opts.dataType};`;
+  }
+  return `ALTER TABLE ${ref} RENAME COLUMN ${oldId} TO ${newId};`;
 }
 
 export interface AlterColumnSpec {
@@ -87,7 +101,7 @@ export interface AlterColumnSpec {
   oldName: string;
   /** The desired final type, exactly as it should appear in DDL. */
   dataType: string;
-  /** Used by MySQL/MariaDB's MODIFY COLUMN, which restates every
+  /** Used by MySQL's MODIFY COLUMN, which restates every
    *  column attribute and silently drops anything you omit. We need
    *  these to preserve the existing nullable / default. PG and SQLite
    *  ignore them. */
@@ -99,9 +113,9 @@ export interface AlterColumnSpec {
 }
 
 /** Change a column's data type. Engine-specific because:
- *  - Postgres / CockroachDB use `ALTER COLUMN <col> TYPE <newtype>`,
- *    and the implicit USING cast covers numeric/text widenings.
- *  - MySQL / MariaDB use `MODIFY COLUMN <col> <full new defn>` and
+ *  - Postgres uses `ALTER COLUMN <col> TYPE <newtype>`, and the
+ *    implicit USING cast covers numeric/text widenings.
+ *  - MySQL uses `MODIFY COLUMN <col> <full new defn>` and
  *    silently drop any column attributes you don't restate, so we
  *    have to re-emit nullable + default explicitly.
  *  - SQLite has no in-place ALTER COLUMN TYPE; the documented path is
@@ -123,7 +137,7 @@ export function buildAlterColumnType(
       'SQLite does not support changing a column\'s type in place. Recreate the table to change the type.',
     );
   }
-  if (engine === 'mysql' || engine === 'mariadb') {
+  if (engine === 'mysql') {
     const parts: string[] = [`ALTER TABLE ${ref} MODIFY COLUMN ${colId}`, spec.dataType];
     if (!spec.nullable) parts.push('NOT NULL');
     if (spec.default && spec.default.trim()) {
@@ -131,7 +145,7 @@ export function buildAlterColumnType(
     }
     return parts.join(' ') + ';';
   }
-  // Postgres + CockroachDB. We don't emit a USING clause — engines
+  // Postgres. We don't emit a USING clause — the engine
   // accept the implicit cast for the common type widenings; for
   // anything cross-family the engine error message is more useful
   // than a guessed USING expression.

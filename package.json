@@ -21,10 +21,18 @@
     "rust:clippy": "cargo clippy --workspace --all-targets -- -D warnings",
     "lint": "pnpm -r --parallel lint",
     "typecheck": "pnpm -r --parallel typecheck",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test:e2e:up": "docker compose -f infra/test/docker-compose.yml up -d",
+    "test:e2e:down": "docker compose -f infra/test/docker-compose.yml down -v",
+    "test:e2e": "tsx scripts/test-e2e/index.ts",
+    "test:e2e:one": "tsx scripts/test-e2e/index.ts --target"
   },
   "devDependencies": {
     "prettier": "^3.4.2",
-    "typescript": "^5.7.2"
+    "typescript": "^5.7.2",
+    "tsx": "^4.19.2",
+    "pg": "^8.13.1",
+    "mysql2": "^3.11.5",
+    "@types/pg": "^8.11.10"
   }
 }

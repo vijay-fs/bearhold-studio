@@ -5,7 +5,7 @@
       "display_name": "PostgreSQL client tools",
       "tool_version": "16.4",
       "tools": ["pg_dump", "pg_restore", "psql"],
-      "covers_engines": ["postgres", "cockroachdb"],
+      "covers_engines": ["postgres"],
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/postgres-16.4-darwin-arm64.tar.gz",
@@ -41,7 +41,7 @@
       "display_name": "MySQL client tools",
       "tool_version": "8.0.39",
       "tools": ["mysqldump", "mysql"],
-      "covers_engines": ["mysql", "mariadb"],
+      "covers_engines": ["mysql"],
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/mysql-8.0.39-darwin-arm64.tar.gz",

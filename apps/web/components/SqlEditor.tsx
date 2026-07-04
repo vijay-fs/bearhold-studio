@@ -33,7 +33,7 @@ export interface SqlEditorProps {
   onRun?: (sql: string) => void;
   /** When provided, drives schema-aware autocomplete (tables, columns). */
   schema?: Schema | null;
-  /** Drives identifier quoting in autocomplete: backticks for MySQL/MariaDB,
+  /** Drives identifier quoting in autocomplete: backticks for MySQL,
    *  ANSI double-quotes for everything else. */
   engine?: DatabaseEngine | null;
   /** Schema/database that doesn't need qualification — tables outside it
@@ -47,7 +47,7 @@ export interface SqlEditorHandle {
   /** Run the current selection, or the full buffer if nothing is selected. */
   run: () => void;
   /** Pretty-print the current selection, or the full buffer if nothing is
-   *  selected. Engine-aware (PG / MySQL / MariaDB / SQLite dialects). The
+   *  selected. Engine-aware (PG / MySQL / SQLite dialects). The
    *  edit goes through Monaco so undo (`Cmd+Z`) reverses it cleanly. */
   format: () => void;
 }

@@ -1,4 +1,4 @@
-//! MySQL / MariaDB driver. Uses sqlx with the Tokio runtime.
+//! MySQL driver. Uses sqlx with the Tokio runtime.
 
 mod decode;
 mod introspect;
@@ -12,9 +12,10 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dbstudio_core::{
     secrets::{self, Slot},
+    server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
-    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult,
-    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
+    AuthMethod, CellUpdate, ConnectionProfile, DbError, Driver, LintOutcome, LintResult,
+    QueryRequest, QueryResult, ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
 };
 use sqlx::{
     mysql::{MySql, MySqlPool, MySqlPoolOptions},
@@ -277,6 +278,35 @@ impl Driver for MySqlDriver {
         Ok(())
     }
 
+    async fn server_info(&self, profile: &ConnectionProfile) -> Result<ServerInfo> {
+        let pool = self.pool_for(profile).await?;
+        // `SELECT VERSION()` returns e.g. `8.0.39`.
+        let raw: String = sqlx::query_scalar("SELECT VERSION()")
+            .fetch_one(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        let (major, minor) = ServerInfo::parse_version(&raw);
+        // sql_mode drives whether string literals accept backslash
+        // escapes. If NO_BACKSLASH_ESCAPES is set we have to emit
+        // doubled-quote escapes instead — the frontend's
+        // sqlLiteral.ts uses `flags.no_backslash_escapes` to switch.
+        let sql_mode: String = sqlx::query_scalar("SELECT @@sql_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap_or_default();
+        let no_backslash_escapes = sql_mode
+            .split(',')
+            .any(|m| m.trim().eq_ignore_ascii_case("NO_BACKSLASH_ESCAPES"));
+        Ok(ServerInfo {
+            major,
+            minor,
+            raw,
+            flags: ServerFlags {
+                no_backslash_escapes,
+            },
+        })
+    }
+
     async fn execute(
         &self,
         profile: &ConnectionProfile,
@@ -443,6 +473,91 @@ impl Driver for MySqlDriver {
         self.tunnels.remove(&profile.id);
         Ok(())
     }
+
+    async fn dry_run(
+        &self,
+        profile: &ConnectionProfile,
+        statements: Vec<String>,
+    ) -> Result<Vec<LintResult>> {
+        // MySQL DDL implicit-commits, so BEGIN/ROLLBACK
+        // WON'T undo an ALTER. Two strategies by statement kind:
+        //   - DDL: PREPARE for syntax check only (no execution). Not
+        //     every ALTER shape supports PREPARE — those return
+        //     Unverifiable so the UI shows "will validate on Apply".
+        //   - DML: EXPLAIN. Fully parses + plans without executing
+        //     the write. Real dry-run for INSERT/UPDATE/DELETE.
+        let pool = self.pool_for(profile).await?;
+        let mut out = Vec::with_capacity(statements.len());
+        for (index, sql) in statements.iter().enumerate() {
+            let outcome = if is_ddl_statement(sql) {
+                let probe = format!(
+                    "PREPARE bearhold_lint_probe FROM {}",
+                    mysql_string_literal(sql)
+                );
+                match sqlx::query(&probe).execute(&pool).await {
+                    Ok(_) => {
+                        let _ = sqlx::query("DEALLOCATE PREPARE bearhold_lint_probe")
+                            .execute(&pool)
+                            .await;
+                        LintOutcome::Ok
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if looks_like_hard_error(&msg) {
+                            LintOutcome::Fail { error: msg }
+                        } else {
+                            LintOutcome::Unverifiable {
+                                reason:
+                                    "MySQL cannot fully dry-run this DDL. It will be validated when you click Apply."
+                                        .into(),
+                            }
+                        }
+                    }
+                }
+            } else {
+                let probe = format!("EXPLAIN {sql}");
+                match sqlx::query(&probe).execute(&pool).await {
+                    Ok(_) => LintOutcome::Ok,
+                    Err(e) => LintOutcome::Fail {
+                        error: e.to_string(),
+                    },
+                }
+            };
+            out.push(LintResult { index, outcome });
+        }
+        Ok(out)
+    }
+}
+
+fn is_ddl_statement(sql: &str) -> bool {
+    let first = sql
+        .trim_start()
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    matches!(
+        first.as_str(),
+        "ALTER" | "CREATE" | "DROP" | "TRUNCATE" | "RENAME" | "COMMENT" | "GRANT" | "REVOKE"
+    )
+}
+
+fn mysql_string_literal(s: &str) -> String {
+    // For the PREPARE probe. Backslash + single-quote escaping — this
+    // is our own SQL we control, so we don't need sql_mode-aware
+    // NO_BACKSLASH_ESCAPES handling.
+    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
+    format!("'{escaped}'")
+}
+
+fn looks_like_hard_error(msg: &str) -> bool {
+    let lower = msg.to_ascii_lowercase();
+    lower.contains("syntax")
+        || lower.contains("1064")
+        || lower.contains("unknown column")
+        || lower.contains("unknown table")
+        || lower.contains("doesn't exist")
+        || lower.contains("does not exist")
 }
 
 async fn run_single(

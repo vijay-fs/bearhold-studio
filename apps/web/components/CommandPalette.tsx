@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
 import type { Route } from 'next';
 import { Command } from 'cmdk';
+import * as DialogPrimitive from '@radix-ui/react-dialog';
 import {
   Database,
   Plus,
@@ -151,6 +152,14 @@ export function CommandPalette() {
       className="fixed inset-0 z-50 flex items-start justify-center bg-background/50 pt-24 backdrop-blur-sm"
       shouldFilter={true}
     >
+      {/* Radix Dialog now enforces an accessible title. cmdk's `label`
+          prop only sets aria-label on the container; without an
+          actual DialogTitle in the tree, Radix logs a console error
+          on every open. We render one inside a visually-hidden
+          wrapper so screen readers announce it but no chrome appears. */}
+      <DialogPrimitive.Title className="sr-only">
+        Command palette
+      </DialogPrimitive.Title>
       <div
         className="w-full max-w-xl overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-2xl"
         onClick={(e) => e.stopPropagation()}

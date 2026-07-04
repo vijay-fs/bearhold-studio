@@ -10,13 +10,24 @@
 // generated SQL always runs against the source connection.
 
 import { useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Loader2, GitCompare, Play, Check, Copy } from 'lucide-react';
+import {
+  AlertCircle,
+  Loader2,
+  GitCompare,
+  Play,
+  Check,
+  Copy,
+  ShieldCheck,
+  ShieldAlert,
+  ShieldQuestion,
+} from 'lucide-react';
 
 import { AppShell } from '@/components/AppShell';
 import { Button } from '@/components/ui/button';
 import { Combobox, type ComboboxOption } from '@/components/ui/combobox';
 import { useConnections } from '@/store/connections';
 import { useSchemaCache } from '@/store/schemaCache';
+import { useServerInfoCache } from '@/store/serverInfoCache';
 import { api } from '@/lib/api';
 import { ENGINE_LABELS, type ConnectionProfile } from '@/lib/types';
 import type { Schema } from '@dbstudio/erd';
@@ -29,9 +40,22 @@ type LoadState =
   | { kind: 'ok'; source: Schema; target: Schema }
   | { kind: 'error'; code: string; message: string };
 
+type LintOutcome =
+  | { kind: 'ok' }
+  | { kind: 'fail'; error: string }
+  | { kind: 'unverifiable'; reason: string };
+
+type LintState =
+  | { kind: 'idle' }
+  | { kind: 'running' }
+  | { kind: 'ok'; byIndex: Map<number, LintOutcome> }
+  | { kind: 'error'; message: string };
+
 export default function SchemaDiffPage() {
   const profiles = useConnections((s) => s.profiles);
   const loadSchema = useSchemaCache((s) => s.load);
+  const loadServerInfo = useServerInfoCache((s) => s.load);
+  const serverInfoBy = useServerInfoCache((s) => s.entries);
   const [sourceId, setSourceId] = useState('');
   const [targetId, setTargetId] = useState('');
   const [load, setLoad] = useState<LoadState>({ kind: 'idle' });
@@ -48,9 +72,14 @@ export default function SchemaDiffPage() {
     if (!sourceProfile || !targetProfile) return;
     setLoad({ kind: 'loading' });
     try {
+      // Fetch schemas + server info in parallel. Server info drives
+      // the version-aware DDL emission — without it we fall back to
+      // safe-minimum syntax which loses IF NOT EXISTS, RETURNING, etc.
       const [s, t] = await Promise.all([
         loadSchema(sourceProfile),
         loadSchema(targetProfile),
+        loadServerInfo(sourceProfile),
+        loadServerInfo(targetProfile),
       ]);
       setLoad({ kind: 'ok', source: s, target: t });
     } catch (e: unknown) {
@@ -65,10 +94,49 @@ export default function SchemaDiffPage() {
 
   const changes = useMemo(() => {
     if (load.kind !== 'ok' || !sourceProfile) return [];
+    // Emit SQL for the SOURCE server version — that's the side the
+    // diff runs against. Target version is informational; it drove
+    // the introspection but doesn't affect emitted syntax.
+    const srcInfo = serverInfoBy[sourceProfile.id];
     return diffSchemas(load.source, load.target, {
       engine: sourceProfile.engine,
+      sourceVersion: srcInfo?.version ?? undefined,
     });
-  }, [load, sourceProfile]);
+  }, [load, sourceProfile, serverInfoBy]);
+
+  // Fire the dry-run linter whenever the change set changes. Runs
+  // against the SOURCE server (the apply target). The linter uses
+  // savepoints (PG/SQLite) or PREPARE/EXPLAIN (MySQL) so
+  // schema state is never mutated. Result is a per-index map the
+  // DiffRow reads to badge itself green/red/yellow.
+  const [lint, setLint] = useState<LintState>({ kind: 'idle' });
+  useEffect(() => {
+    if (!sourceProfile || changes.length === 0) {
+      setLint({ kind: 'idle' });
+      return;
+    }
+    let cancelled = false;
+    setLint({ kind: 'running' });
+    void api
+      .dryRunStatements(sourceProfile, changes.map((c) => c.sql))
+      .then((results) => {
+        if (cancelled) return;
+        const byIndex = new Map<number, LintOutcome>();
+        for (const r of results) byIndex.set(r.index, r.outcome);
+        setLint({ kind: 'ok', byIndex });
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return;
+        const err = e as { code?: string; message?: string };
+        setLint({
+          kind: 'error',
+          message: `${err.code ?? 'unknown'} · ${err.message ?? String(e)}`,
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [changes, sourceProfile]);
 
   return (
     <AppShell>
@@ -146,6 +214,7 @@ export default function SchemaDiffPage() {
           <DiffList
             changes={changes}
             sourceProfile={sourceProfile}
+            lint={lint}
             onApplied={() => {
               // After at least one statement applied, the source's
               // cached schema is stale. Force a reload so the diff
@@ -195,10 +264,12 @@ function ConnectionPicker({
 function DiffList({
   changes,
   sourceProfile,
+  lint,
   onApplied,
 }: {
   changes: DiffChange[];
   sourceProfile: ConnectionProfile;
+  lint: LintState;
   onApplied: () => void;
 }) {
   if (changes.length === 0) {
@@ -208,15 +279,22 @@ function DiffList({
       </div>
     );
   }
+  const failing =
+    lint.kind === 'ok'
+      ? Array.from(lint.byIndex.values()).filter((o) => o.kind === 'fail').length
+      : 0;
   return (
     <section className="space-y-3">
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-semibold">
           {changes.length} change{changes.length === 1 ? '' : 's'}
         </h2>
-        <span className="text-[11px] text-muted-foreground">
-          Applies to <span className="font-mono">{sourceProfile.name}</span>
-        </span>
+        <div className="flex items-center gap-3 text-[11px] text-muted-foreground">
+          <LintSummary lint={lint} failing={failing} />
+          <span>
+            Applies to <span className="font-mono">{sourceProfile.name}</span>
+          </span>
+        </div>
       </div>
       <ul className="space-y-3">
         {changes.map((c, i) => (
@@ -224,6 +302,8 @@ function DiffList({
             key={i}
             change={c}
             sourceProfile={sourceProfile}
+            lintOutcome={lint.kind === 'ok' ? lint.byIndex.get(i) : undefined}
+            lintRunning={lint.kind === 'running'}
             onApplied={onApplied}
           />
         ))}
@@ -232,13 +312,44 @@ function DiffList({
   );
 }
 
+function LintSummary({ lint, failing }: { lint: LintState; failing: number }) {
+  if (lint.kind === 'running') {
+    return (
+      <span className="flex items-center gap-1">
+        <Loader2 className="h-3 w-3 animate-spin" />
+        Dry-running…
+      </span>
+    );
+  }
+  if (lint.kind === 'error') {
+    return (
+      <span className="text-amber-600 dark:text-amber-400">
+        Dry-run unavailable: {lint.message}
+      </span>
+    );
+  }
+  if (lint.kind === 'ok') {
+    if (failing === 0) return <span className="text-emerald-600">All statements dry-run cleanly.</span>;
+    return (
+      <span className="text-destructive">
+        {failing} statement{failing === 1 ? '' : 's'} failed dry-run.
+      </span>
+    );
+  }
+  return null;
+}
+
 function DiffRow({
   change,
   sourceProfile,
+  lintOutcome,
+  lintRunning,
   onApplied,
 }: {
   change: DiffChange;
   sourceProfile: ConnectionProfile;
+  lintOutcome: LintOutcome | undefined;
+  lintRunning: boolean;
   onApplied: () => void;
 }) {
   const [sql, setSql] = useState(change.sql);
@@ -265,18 +376,21 @@ function DiffRow({
   };
 
   const destructive = change.kind === 'drop-table' || change.kind === 'drop-column';
+  const lintFailed = lintOutcome?.kind === 'fail';
 
   return (
     <li
       className={cn(
         'rounded border p-3',
-        done ? 'border-emerald-500/40 bg-emerald-500/5' : '',
+        done && 'border-emerald-500/40 bg-emerald-500/5',
+        !done && lintFailed && 'border-destructive/50 bg-destructive/5',
       )}
     >
       <div className="mb-2 flex items-center gap-2 text-xs">
         <span className="font-medium">{change.label}</span>
         <span className="text-muted-foreground">·</span>
         <span className="font-mono text-muted-foreground">{change.kind}</span>
+        <LintBadge outcome={lintOutcome} running={lintRunning} />
       </div>
       <textarea
         value={sql}
@@ -289,6 +403,17 @@ function DiffRow({
         disabled={applying || done}
       />
       {error && <p className="mt-1.5 text-xs text-destructive">{error}</p>}
+      {lintOutcome?.kind === 'fail' && !done && (
+        <p className="mt-1.5 text-xs text-destructive">
+          <span className="font-semibold">Server would reject this:</span>{' '}
+          <span className="font-mono">{lintOutcome.error}</span>
+        </p>
+      )}
+      {lintOutcome?.kind === 'unverifiable' && !done && (
+        <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400">
+          {lintOutcome.reason}
+        </p>
+      )}
       <div className="mt-2 flex items-center justify-end gap-2">
         <Button
           size="sm"
@@ -316,5 +441,44 @@ function DiffRow({
         </Button>
       </div>
     </li>
+  );
+}
+
+function LintBadge({
+  outcome,
+  running,
+}: {
+  outcome: LintOutcome | undefined;
+  running: boolean;
+}) {
+  if (running || !outcome) {
+    return (
+      <span className="ml-auto inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+        <Loader2 className="h-2.5 w-2.5 animate-spin" />
+        Verifying…
+      </span>
+    );
+  }
+  if (outcome.kind === 'ok') {
+    return (
+      <span className="ml-auto inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+        <ShieldCheck className="h-2.5 w-2.5" />
+        Verified
+      </span>
+    );
+  }
+  if (outcome.kind === 'fail') {
+    return (
+      <span className="ml-auto inline-flex items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
+        <ShieldAlert className="h-2.5 w-2.5" />
+        Would fail
+      </span>
+    );
+  }
+  return (
+    <span className="ml-auto inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
+      <ShieldQuestion className="h-2.5 w-2.5" />
+      Unverified
+    </span>
   );
 }

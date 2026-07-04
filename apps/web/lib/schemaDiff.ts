@@ -23,6 +23,11 @@ import type {
 
 import type { DatabaseEngine } from './types';
 import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
+import {
+  capabilities,
+  unknownVersion,
+  type EngineVersion,
+} from './engineVersion';
 
 // Diff SQL is always quoted, never soft-quoted. The soft-quoter is for
 // SQL the user reads (open-table flow, autocomplete inserts) — it
@@ -59,6 +64,11 @@ export interface DiffChange {
 
 interface DiffOptions {
   engine: DatabaseEngine;
+  /** Server version of the SOURCE (the side we run the SQL against).
+   *  When omitted, the safe-minimum capability set is used — every
+   *  emitter falls back to the syntax that works on the oldest
+   *  supported version of that engine. */
+  sourceVersion?: EngineVersion;
 }
 
 /** Compute the changes needed for `source` to match `target`. The
@@ -71,6 +81,8 @@ export function diffSchemas(
   options: DiffOptions,
 ): DiffChange[] {
   const { engine } = options;
+  const version = options.sourceVersion ?? unknownVersion(engine);
+  const caps = capabilities(version);
   const changes: DiffChange[] = [];
 
   const sourceTables = indexTables(source);
@@ -93,8 +105,8 @@ export function diffSchemas(
   for (const [key, tt] of targetTables) {
     const st = sourceTables.get(key);
     if (!st) continue;
-    diffColumns(engine, st, tt, changes);
-    diffIndexes(engine, st, tt, changes);
+    diffColumns(engine, caps, st, tt, changes);
+    diffIndexes(engine, caps, st, tt, changes);
   }
 
   // -- DROP TABLE for every table in source but not target. Drops go
@@ -127,6 +139,7 @@ function indexTables(schema: Schema): Map<string, Table> {
 
 function diffColumns(
   engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
   source: Table,
   target: Table,
   changes: DiffChange[],
@@ -142,7 +155,7 @@ function diffColumns(
         schema: source.schema,
         table: source.name,
         label: `Add column ${name}`,
-        sql: buildAddColumn(engine, source.schema, source.name, tc),
+        sql: buildAddColumn(engine, caps, source.schema, source.name, tc),
       });
       continue;
     }
@@ -152,7 +165,19 @@ function diffColumns(
         schema: source.schema,
         table: source.name,
         label: `Change ${name} type: ${sc.data_type} → ${tc.data_type}`,
-        sql: buildAlterColumnType(engine, source.schema, source.name, name, tc.data_type),
+        // MySQL MODIFY restates the whole column definition and silently
+        // drops any attribute you omit — so we pass the source column's
+        // current nullable/default alongside the new type. PG ignores
+        // these extras.
+        sql: buildAlterColumnType(
+          engine,
+          caps,
+          source.schema,
+          source.name,
+          name,
+          tc.data_type,
+          { nullable: tc.nullable, default: tc.default ?? null },
+        ),
       });
     }
     if (sc.nullable !== tc.nullable) {
@@ -161,13 +186,12 @@ function diffColumns(
         schema: source.schema,
         table: source.name,
         label: `${tc.nullable ? 'Drop' : 'Set'} NOT NULL on ${name}`,
-        sql: buildAlterColumnNullable(
-          engine,
-          source.schema,
-          source.name,
-          name,
-          tc.nullable,
-        ),
+        // Pass the effective type for the MySQL MODIFY restate path.
+        // Target type wins if it changed; otherwise keep source's.
+        sql: buildAlterColumnNullable(engine, caps, source.schema, source.name, name, tc.nullable, {
+          dataType: (tc.data_type || sc.data_type) as string,
+          default: tc.default ?? sc.default ?? null,
+        }),
       });
     }
   }
@@ -190,6 +214,7 @@ function diffColumns(
 
 function diffIndexes(
   engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
   source: Table,
   target: Table,
   changes: DiffChange[],
@@ -209,7 +234,7 @@ function diffIndexes(
         schema: source.schema,
         table: source.name,
         label: `Add index ${name}`,
-        sql: buildCreateIndex(engine, source.schema, source.name, ti),
+        sql: buildCreateIndex(engine, caps, source.schema, source.name, ti),
       });
     }
   }
@@ -273,6 +298,7 @@ function buildCreateTable(engine: DatabaseEngine, t: Table): string {
 
 function buildAddColumn(
   engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
   schema: string,
   table: string,
   c: Column,
@@ -281,7 +307,7 @@ function buildAddColumn(
   const parts: string[] = [
     'ALTER TABLE',
     tableRef(engine, schema, table),
-    'ADD COLUMN',
+    caps.addColumnIfNotExists ? 'ADD COLUMN IF NOT EXISTS' : 'ADD COLUMN',
     ident(c.name, style),
     c.data_type,
   ];
@@ -290,39 +316,70 @@ function buildAddColumn(
   return parts.join(' ') + ';';
 }
 
+interface MysqlModifyExtras {
+  nullable: boolean;
+  default: string | null;
+}
+
 /** ALTER COLUMN TYPE syntax varies by engine — Postgres uses `ALTER
- *  COLUMN col TYPE new_type`, MySQL `MODIFY COLUMN col new_type`. We
- *  emit the engine-appropriate form for the common cases and let the
- *  user hand-edit for anything more exotic (USING clauses, casts). */
+ *  COLUMN col TYPE new_type`, MySQL `MODIFY COLUMN col new_type ...`
+ *  which restates every attribute. For MySQL we require the effective
+ *  nullable+default so the restate doesn't silently drop them. */
 function buildAlterColumnType(
   engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
   schema: string,
   table: string,
   column: string,
   newType: string,
-): string {
-  const style = quoteStyleForEngine(engine);
-  const ref = tableRef(engine, schema, table);
-  if (engine === 'mysql' || engine === 'mariadb') {
-    return `ALTER TABLE ${ref} MODIFY COLUMN ${ident(column, style)} ${newType};`;
-  }
-  return `ALTER TABLE ${ref} ALTER COLUMN ${ident(column, style)} TYPE ${newType};`;
-}
-
-function buildAlterColumnNullable(
-  engine: DatabaseEngine,
-  schema: string,
-  table: string,
-  column: string,
-  nullable: boolean,
+  extras: MysqlModifyExtras,
 ): string {
   const style = quoteStyleForEngine(engine);
   const ref = tableRef(engine, schema, table);
   const colId = ident(column, style);
-  if (engine === 'mysql' || engine === 'mariadb') {
-    // MySQL requires re-stating the full column definition in MODIFY;
-    // we don't have the type handy here, so emit a note + best-effort.
-    return `-- MySQL: re-state the column type below, then change NULL\nALTER TABLE ${ref} MODIFY COLUMN ${colId} <type> ${nullable ? 'NULL' : 'NOT NULL'};`;
+  if (caps.modifyColumnRestates) {
+    const parts = [`ALTER TABLE ${ref} MODIFY COLUMN ${colId}`, newType];
+    if (!extras.nullable) parts.push('NOT NULL');
+    if (extras.default && extras.default.trim()) parts.push(`DEFAULT ${extras.default.trim()}`);
+    return parts.join(' ') + ';';
+  }
+  // PG. USING is optional but if capability says we support
+  // it, we emit an implicit-cast-friendly `USING colId::newType` so
+  // cross-family widenings (varchar -> int) don't die at runtime.
+  const usingClause = caps.usingClauseOnAlterType
+    ? ` USING ${colId}::${newType}`
+    : '';
+  return `ALTER TABLE ${ref} ALTER COLUMN ${colId} TYPE ${newType}${usingClause};`;
+}
+
+interface MysqlNullableExtras {
+  /** The column's current data type — required by MySQL MODIFY, which
+   *  drops any attribute we don't restate. */
+  dataType: string;
+  default: string | null;
+}
+
+function buildAlterColumnNullable(
+  engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
+  schema: string,
+  table: string,
+  column: string,
+  nullable: boolean,
+  extras: MysqlNullableExtras,
+): string {
+  const style = quoteStyleForEngine(engine);
+  const ref = tableRef(engine, schema, table);
+  const colId = ident(column, style);
+  if (caps.modifyColumnRestates) {
+    // MySQL restates the full column definition on every MODIFY. Any
+    // attribute we don't repeat gets dropped silently — so we always
+    // emit the type, and the nullable + default as we know them.
+    const parts = [`ALTER TABLE ${ref} MODIFY COLUMN ${colId}`, extras.dataType];
+    if (!nullable) parts.push('NOT NULL');
+    else parts.push('NULL');
+    if (extras.default && extras.default.trim()) parts.push(`DEFAULT ${extras.default.trim()}`);
+    return parts.join(' ') + ';';
   }
   return nullable
     ? `ALTER TABLE ${ref} ALTER COLUMN ${colId} DROP NOT NULL;`
@@ -331,11 +388,14 @@ function buildAlterColumnNullable(
 
 function buildCreateIndex(
   engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
   schema: string,
   table: string,
   idx: Index,
 ): string {
   const style = quoteStyleForEngine(engine);
-  return `${idx.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX'} ${ident(idx.name, style)} ON ${tableRef(engine, schema, table)} (${idx.columns.map((c) => ident(c, style)).join(', ')});`;
+  const kw = idx.unique ? 'CREATE UNIQUE INDEX' : 'CREATE INDEX';
+  const ifNotExists = caps.createIndexIfNotExists ? ' IF NOT EXISTS' : '';
+  return `${kw}${ifNotExists} ${ident(idx.name, style)} ON ${tableRef(engine, schema, table)} (${idx.columns.map((c) => ident(c, style)).join(', ')});`;
 }
 

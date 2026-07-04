@@ -52,6 +52,42 @@ export const api = {
     return invoke('get_schema', { profile });
   },
 
+  /** Returns `{ major, minor, raw, flags }` — the frontend's engine
+   *  capability model consumes major/minor to gate modern SQL syntax
+   *  (IF NOT EXISTS, RETURNING, ON CONFLICT). Rejects with
+   *  Unsupported on NoSQL engines; callers should tolerate that. */
+  getServerInfo(profile: ConnectionProfile): Promise<{
+    major: number | null;
+    minor: number | null;
+    raw: string;
+    flags: { no_backslash_escapes?: boolean };
+  }> {
+    return invoke('get_server_info', { profile });
+  },
+
+  /** Dry-run a batch of SQL statements against the target without
+   *  persisting effects. Returns one outcome per input statement:
+   *    - `ok` — server accepted the statement in a rolled-back /
+   *      parse-only context.
+   *    - `fail` — server rejected with an error string.
+   *    - `unverifiable` — engine can't safely dry-run this statement
+   *      shape (MySQL DDL is the primary case). The UI shows a
+   *      "will validate on Apply" note instead of a green check. */
+  dryRunStatements(
+    profile: ConnectionProfile,
+    statements: string[],
+  ): Promise<
+    Array<{
+      index: number;
+      outcome:
+        | { kind: 'ok' }
+        | { kind: 'fail'; error: string }
+        | { kind: 'unverifiable'; reason: string };
+    }>
+  > {
+    return invoke('dry_run_statements', { profile, statements });
+  },
+
   runQuery(profile: ConnectionProfile, request: QueryRequest): Promise<QueryResult> {
     return invoke('run_query', { profile, request });
   },

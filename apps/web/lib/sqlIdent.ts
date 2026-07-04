@@ -66,5 +66,5 @@ export function softQuoteIdent(name: string, style: QuoteStyle): string {
 
 /** Convenience: convert a DatabaseEngine to the matching quote style. */
 export function quoteStyleForEngine(engine: string): QuoteStyle {
-  return engine === 'mysql' || engine === 'mariadb' ? 'backtick' : 'ansi';
+  return engine === 'mysql' ? 'backtick' : 'ansi';
 }

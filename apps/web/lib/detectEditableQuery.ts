@@ -74,12 +74,10 @@ export function detectEditableQuery(
 function defaultSchemaName(profile: ConnectionProfile): string {
   switch (profile.engine) {
     case 'mysql':
-    case 'mariadb':
       return profile.database;
     case 'sqlite':
       return 'main';
     case 'postgres':
-    case 'cockroachdb':
     default:
       return 'public';
   }

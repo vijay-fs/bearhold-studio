@@ -13,6 +13,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { isMacPlatform } from '@/lib/platform';
 
 interface Binding {
   keys: string[];
@@ -25,12 +26,17 @@ interface Group {
 }
 
 /** Renders a single key as a styled <kbd>. Tokens are normalized so
- *  "Cmd" displays the platform glyph on macOS and the word elsewhere. */
+ *  "Cmd" displays the platform glyph on macOS and the word elsewhere.
+ *  We compute the platform label in a mount effect so the initial
+ *  SSR-safe render is stable — otherwise a Linux/Windows user would
+ *  flash the ⌘ glyph before hydration corrects it. */
 function Key({ token }: { token: string }) {
-  const platformMac =
-    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+  const [mac, setMac] = useState(false);
+  useEffect(() => {
+    setMac(isMacPlatform());
+  }, []);
   const display =
-    token === 'Cmd' ? (platformMac ? '⌘' : 'Ctrl') : token === 'Shift' ? '⇧' : token;
+    token === 'Cmd' ? (mac ? '⌘' : 'Ctrl') : token === 'Shift' ? '⇧' : token;
   return (
     <kbd className="inline-flex h-5 min-w-[1.25rem] items-center justify-center rounded border bg-muted/60 px-1.5 font-mono text-[10px] font-medium">
       {display}

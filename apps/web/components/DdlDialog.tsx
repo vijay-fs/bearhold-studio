@@ -352,11 +352,11 @@ export function DdlDialog({ profile, mode, onClose, onChanged }: Props) {
                 name can be changed from this dialog.
               </p>
             )}
-            {(profile.engine === 'mysql' || profile.engine === 'mariadb') && (
+            {profile.engine === 'mysql' && (
               <p className="text-[10px] text-muted-foreground">
-                MySQL/MariaDB&apos;s <code>MODIFY COLUMN</code> restates the
-                full column. Nullable + default are re-emitted from the
-                form values above; leave them unchanged to preserve.
+                MySQL&apos;s <code>MODIFY COLUMN</code> restates the full
+                column. Nullable + default are re-emitted from the form
+                values above; leave them unchanged to preserve.
               </p>
             )}
           </div>
@@ -512,10 +512,8 @@ function TypeSelect({
 function engineDefaultType(engine: DatabaseEngine): string {
   switch (engine) {
     case 'postgres':
-    case 'cockroachdb':
       return 'text';
     case 'mysql':
-    case 'mariadb':
       return 'VARCHAR(255)';
     case 'sqlite':
       return 'TEXT';

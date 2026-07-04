@@ -167,7 +167,7 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
       }));
     } else {
       const defaultPort =
-        engine === 'mysql' || engine === 'mariadb'
+        engine === 'mysql'
           ? 3306
           : engine === 'mongodb'
             ? 27017
@@ -383,9 +383,7 @@ export function ConnectionForm({ initial }: { initial: ConnectionProfile }) {
               onChange={(e) => switchEngine(e.target.value as DatabaseEngine)}
             >
               <option value="postgres">{ENGINE_LABELS.postgres}</option>
-              <option value="cockroachdb">{ENGINE_LABELS.cockroachdb}</option>
               <option value="mysql">{ENGINE_LABELS.mysql}</option>
-              <option value="mariadb">{ENGINE_LABELS.mariadb}</option>
               <option value="sqlite">{ENGINE_LABELS.sqlite}</option>
               <option value="mongodb">{ENGINE_LABELS.mongodb}</option>
               <option value="redis">{ENGINE_LABELS.redis}</option>

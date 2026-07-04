@@ -8,25 +8,14 @@
 import { format as sqlFormat } from 'sql-formatter';
 import type { DatabaseEngine } from './types';
 
-type Dialect =
-  | 'sql'
-  | 'postgresql'
-  | 'mysql'
-  | 'mariadb'
-  | 'sqlite'
-  | 'transactsql';
+type Dialect = 'sql' | 'postgresql' | 'mysql' | 'sqlite' | 'transactsql';
 
 function dialectFor(engine: DatabaseEngine | null | undefined): Dialect {
   switch (engine) {
     case 'postgres':
-    // CockroachDB speaks the PG wire protocol and PG SQL, so PG rules
-    // produce the cleanest output here.
-    case 'cockroachdb':
       return 'postgresql';
     case 'mysql':
       return 'mysql';
-    case 'mariadb':
-      return 'mariadb';
     case 'sqlite':
       return 'sqlite';
     default:

@@ -1,7 +1,8 @@
 use dbstudio_core::{
     secrets::{self, Slot},
-    ssh_tunnel, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, QueryRequest, QueryResult,
-    RowDelete, RowInsert, Schema,
+    server_info::ServerInfo,
+    ssh_tunnel, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, LintResult, QueryRequest,
+    QueryResult, RowDelete, RowInsert, Schema,
 };
 use serde::Serialize;
 use tauri::State;
@@ -32,9 +33,7 @@ pub type CommandResult<T> = Result<T, CommandError>;
 pub fn list_engines() -> Vec<DatabaseEngine> {
     vec![
         DatabaseEngine::Postgres,
-        DatabaseEngine::CockroachDb,
         DatabaseEngine::MySql,
-        DatabaseEngine::MariaDb,
         DatabaseEngine::Sqlite,
         DatabaseEngine::MongoDb,
         DatabaseEngine::Redis,
@@ -74,6 +73,40 @@ pub async fn get_schema(
         .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
     let schema = driver.schema(&profile).await?;
     Ok(schema)
+}
+
+/// Fetch server version + capability flags. Frontend caches on the
+/// connection profile so the diff and data-diff generators can emit
+/// version-appropriate SQL. Returns `Unsupported` for NoSQL engines —
+/// callers should tolerate that and fall back to the safe-minimum
+/// capability set.
+#[tauri::command]
+pub async fn get_server_info(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+) -> CommandResult<ServerInfo> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let info = driver.server_info(&profile).await?;
+    Ok(info)
+}
+
+/// Dry-run a batch of SQL statements without applying them. Used by
+/// the diff and data-diff pages to surface an error badge next to a
+/// generated statement BEFORE the user clicks Apply. See
+/// `Driver::dry_run` for per-engine strategy notes.
+#[tauri::command]
+pub async fn dry_run_statements(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    statements: Vec<String>,
+) -> CommandResult<Vec<LintResult>> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let results = driver.dry_run(&profile, statements).await?;
+    Ok(results)
 }
 
 #[tauri::command]

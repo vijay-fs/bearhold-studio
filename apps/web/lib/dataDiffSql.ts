@@ -10,6 +10,11 @@ import { quoteIdent, quoteStyleForEngine } from './sqlIdent';
 import { formatSqlLiteral } from './sqlLiteral';
 import type { DatabaseEngine } from './types';
 import type { DataDiffResult } from './dataDiff';
+import {
+  capabilities,
+  unknownVersion,
+  type EngineVersion,
+} from './engineVersion';
 
 function tableRef(
   engine: DatabaseEngine,
@@ -30,6 +35,15 @@ export interface SyncSqlOptions {
    *  should target become like source (reverse)? "Make source like
    *  target" is the schema-diff convention we mirror here. */
   direction?: 'source-to-target' | 'target-to-source';
+  /** Server version of the side we WRITE to. Controls upsert flavor
+   *  (ON CONFLICT vs ON DUPLICATE KEY UPDATE) and fallback shape when
+   *  the engine supports neither. */
+  writeSideVersion?: EngineVersion;
+  /** Emit INSERTs as upserts. Guards against race conditions where the
+   *  row was inserted between diff-preview and apply — a plain INSERT
+   *  would 23505 and abort the transaction. Off by default so preview
+   *  SQL stays simple; the diff page can flip it on with a checkbox. */
+  upsertMode?: 'insert-only' | 'upsert';
 }
 
 export interface SyncStatements {
@@ -57,6 +71,8 @@ export function buildSyncStatements(
   const style = quoteStyleForEngine(engine);
   const ref = tableRef(engine, schema, table);
   const direction = opts.direction ?? 'source-to-target';
+  const upsertMode = opts.upsertMode ?? 'insert-only';
+  const caps = capabilities(opts.writeSideVersion ?? unknownVersion(engine));
   const inserts: string[] = [];
   const updates: string[] = [];
   const deletes: string[] = [];
@@ -72,9 +88,33 @@ export function buildSyncStatements(
   // than omitting ones that match defaults — the source row is the
   // authoritative shape and omitting columns risks silent defaulting.
   const colList = diff.columns.map((c) => quoteIdent(c, style)).join(', ');
+  const pkSetTmp = new Set(diff.pkColumns);
+  const nonPkCols = diff.columns.filter((c) => !pkSetTmp.has(c));
   for (const row of rowsToInsert) {
     const values = row.values.map((v) => formatSqlLiteral(v, engine)).join(', ');
-    inserts.push(`INSERT INTO ${ref} (${colList}) VALUES (${values});`);
+    const base = `INSERT INTO ${ref} (${colList}) VALUES (${values})`;
+    if (upsertMode === 'upsert' && nonPkCols.length > 0) {
+      if (caps.onConflictDoUpdate) {
+        // PG / SQLite form.
+        const conflictCols = diff.pkColumns.map((c) => quoteIdent(c, style)).join(', ');
+        const setClause = nonPkCols
+          .map((c) => `${quoteIdent(c, style)} = EXCLUDED.${quoteIdent(c, style)}`)
+          .join(', ');
+        inserts.push(`${base} ON CONFLICT (${conflictCols}) DO UPDATE SET ${setClause};`);
+        continue;
+      }
+      if (caps.onDuplicateKeyUpdate) {
+        // MySQL form. VALUES(col) is the pre-8.0.20 syntax
+        // that still works everywhere; 8.0.20+ prefers row aliases
+        // but the older form is universally accepted.
+        const setClause = nonPkCols
+          .map((c) => `${quoteIdent(c, style)} = VALUES(${quoteIdent(c, style)})`)
+          .join(', ');
+        inserts.push(`${base} ON DUPLICATE KEY UPDATE ${setClause};`);
+        continue;
+      }
+    }
+    inserts.push(`${base};`);
   }
 
   // UPDATEs: only the differing columns appear in SET, and we never

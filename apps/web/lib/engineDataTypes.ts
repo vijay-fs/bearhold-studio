@@ -56,36 +56,6 @@ export const ENGINE_TYPES: Record<DatabaseEngine, TypeGroup[]> = {
     },
   ],
 
-  cockroachdb: [
-    // CockroachDB is PG-wire-compatible — same type names, same
-    // user-facing surface. We keep a separate entry so future
-    // divergence (decimal sizes, geo types) can land cleanly.
-    {
-      label: 'Numeric',
-      types: ['INT8', 'INT4', 'INT2', 'SERIAL', 'DECIMAL', 'FLOAT4', 'FLOAT8'],
-    },
-    {
-      label: 'Text',
-      types: ['STRING', 'VARCHAR(255)', 'CHAR(1)'],
-    },
-    {
-      label: 'Date/Time',
-      types: ['TIMESTAMPTZ', 'TIMESTAMP', 'DATE', 'TIME', 'INTERVAL'],
-    },
-    {
-      label: 'Boolean',
-      types: ['BOOL'],
-    },
-    {
-      label: 'JSON / Structured',
-      types: ['JSONB', 'UUID'],
-    },
-    {
-      label: 'Binary',
-      types: ['BYTES'],
-    },
-  ],
-
   mysql: [
     {
       label: 'Numeric',
@@ -125,33 +95,6 @@ export const ENGINE_TYPES: Record<DatabaseEngine, TypeGroup[]> = {
     {
       label: 'Enum / Set',
       types: ["ENUM('a','b','c')", "SET('a','b','c')"],
-    },
-  ],
-
-  mariadb: [
-    {
-      label: 'Numeric',
-      types: ['INT', 'BIGINT', 'SMALLINT', 'TINYINT', 'DECIMAL(10,2)', 'DOUBLE'],
-    },
-    {
-      label: 'Text',
-      types: ['VARCHAR(255)', 'TEXT', 'LONGTEXT', 'CHAR(1)'],
-    },
-    {
-      label: 'Date/Time',
-      types: ['DATETIME', 'TIMESTAMP', 'DATE', 'TIME'],
-    },
-    {
-      label: 'Boolean',
-      types: ['BOOLEAN'],
-    },
-    {
-      label: 'JSON / Structured',
-      types: ['JSON', 'UUID'],
-    },
-    {
-      label: 'Binary',
-      types: ['BLOB', 'VARBINARY(255)'],
     },
   ],
 

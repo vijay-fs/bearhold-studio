@@ -138,14 +138,14 @@ export function parseTablePlus(text: string): ImportedProfile[] {
 
 function mapTablePlusDriver(driver: string): DatabaseEngine | null {
   if (driver.includes('postgres')) return 'postgres';
-  if (driver.includes('mariadb')) return 'mariadb';
-  if (driver.includes('mysql')) return 'mysql';
+  // TablePlus tags MariaDB imports as "mariadb"; we fold those into
+  // the MySQL profile since Bearhold no longer differentiates the two.
+  if (driver.includes('mysql') || driver.includes('mariadb')) return 'mysql';
   if (driver.includes('sqlite')) return 'sqlite';
-  if (driver.includes('cockroach')) return 'cockroachdb';
   return null;
 }
 
 function defaultPortFor(engine: DatabaseEngine): number {
-  if (engine === 'mysql' || engine === 'mariadb') return 3306;
+  if (engine === 'mysql') return 3306;
   return 5432;
 }

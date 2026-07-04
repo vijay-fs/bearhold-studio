@@ -32,7 +32,7 @@ function extractMissing(
   // Postgres: `column "x" does not exist`
   m = message.match(/column "([^"]+)" does not exist/i);
   if (m) return { kind: 'column', name: m[1] ?? '' };
-  // MySQL/MariaDB: `Table 'db.table' doesn't exist`
+  // MySQL: `Table 'db.table' doesn't exist`
   m = message.match(/Table ['`]?([^'`]+)['`]? doesn't exist/i);
   if (m) {
     const parts = (m[1] ?? '').split('.');

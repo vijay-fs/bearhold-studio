@@ -4,13 +4,11 @@
 export type DatabaseEngine =
   | 'postgres'
   | 'mysql'
-  | 'mariadb'
   | 'sqlite'
   | 'mongodb'
   | 'redis'
   | 'cassandra'
   | 'neo4j'
-  | 'cockroachdb'
   | 'couchdb';
 
 export type TlsMode = 'disable' | 'prefer' | 'require' | 'verify_ca' | 'verify_full';
@@ -180,12 +178,10 @@ export interface RedisScanResponse {
 export const ENGINE_LABELS: Record<DatabaseEngine, string> = {
   postgres: 'PostgreSQL',
   mysql: 'MySQL',
-  mariadb: 'MariaDB',
   sqlite: 'SQLite',
   mongodb: 'MongoDB',
   redis: 'Redis',
   cassandra: 'Cassandra',
   neo4j: 'Neo4j',
-  cockroachdb: 'CockroachDB',
   couchdb: 'CouchDB',
 };

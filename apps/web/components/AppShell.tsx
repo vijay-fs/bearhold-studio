@@ -171,7 +171,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="grid h-screen grid-cols-[260px_1fr] bg-background">
       <aside className="flex flex-col border-r bg-secondary/30">
-        <div className="flex items-center gap-2 border-b px-5 py-3.5">
+        {/* Header logo doubles as a "home" link — clicking it takes
+            you back to the dashboard root, matching how nearly every
+            other desktop app's logo behaves. */}
+        <Link
+          href="/"
+          className="flex items-center gap-2 border-b px-5 py-3.5 transition hover:bg-accent/40"
+          aria-label="Go to dashboard"
+        >
           {/* Source PNG is white-stroked on transparent. We need it
               to read against both backgrounds: in light mode the
               white strokes vanish on a light background, so we
@@ -186,7 +193,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="h-5 w-5 invert dark:invert-0"
           />
           <span className="text-sm font-semibold tracking-tight">Bearhold Studio</span>
-        </div>
+        </Link>
 
         <div className="flex items-center justify-between px-5 pt-4 pb-2">
           <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
@@ -508,7 +515,7 @@ function TableNav({
   }, [profile.id]);
 
   const defaultSchema = useMemo(() => {
-    if (profile.engine === 'mysql' || profile.engine === 'mariadb') return profile.database;
+    if (profile.engine === 'mysql') return profile.database;
     if (profile.engine === 'sqlite') return 'main';
     return 'public';
   }, [profile.engine, profile.database]);

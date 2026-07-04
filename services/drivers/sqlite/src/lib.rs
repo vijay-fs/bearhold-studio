@@ -10,8 +10,9 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use dashmap::DashMap;
 use dbstudio_core::{
-    CellUpdate, ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, ResultColumn,
-    Result, RowDelete, RowInsert, Schema, Value,
+    server_info::{ServerFlags, ServerInfo},
+    CellUpdate, ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest,
+    QueryResult, ResultColumn, Result, RowDelete, RowInsert, Schema, Value,
 };
 use sqlx::{
     sqlite::{Sqlite, SqlitePool, SqlitePoolOptions},
@@ -120,6 +121,23 @@ impl Driver for SqliteDriver {
             .await
             .map_err(map_sqlx_error)?;
         Ok(())
+    }
+
+    async fn server_info(&self, profile: &ConnectionProfile) -> Result<ServerInfo> {
+        let pool = self.pool_for(profile).await?;
+        // `sqlite_version()` returns `3.46.1`. Gates like RETURNING
+        // (3.35+) and ON CONFLICT (3.24+) depend on minor.
+        let raw: String = sqlx::query_scalar("SELECT sqlite_version()")
+            .fetch_one(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        let (major, minor) = ServerInfo::parse_version(&raw);
+        Ok(ServerInfo {
+            major,
+            minor,
+            raw,
+            flags: ServerFlags::default(),
+        })
     }
 
     async fn execute(
@@ -268,6 +286,43 @@ impl Driver for SqliteDriver {
             pool.close().await;
         }
         Ok(())
+    }
+
+    async fn dry_run(
+        &self,
+        profile: &ConnectionProfile,
+        statements: Vec<String>,
+    ) -> Result<Vec<LintResult>> {
+        let pool = self.pool_for(profile).await?;
+        let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
+        let mut out = Vec::with_capacity(statements.len());
+        for (index, sql) in statements.iter().enumerate() {
+            let sp = format!("bearhold_lint_{index}");
+            sqlx::query(&format!("SAVEPOINT {sp}"))
+                .execute(&mut *tx)
+                .await
+                .map_err(map_sqlx_error)?;
+            let outcome = match sqlx::query(sql).execute(&mut *tx).await {
+                Ok(_) => {
+                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(map_sqlx_error)?;
+                    LintOutcome::Ok
+                }
+                Err(e) => {
+                    let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
+                        .execute(&mut *tx)
+                        .await;
+                    LintOutcome::Fail {
+                        error: format!("{e}"),
+                    }
+                }
+            };
+            out.push(LintResult { index, outcome });
+        }
+        let _ = tx.rollback().await;
+        Ok(out)
     }
 }
 
