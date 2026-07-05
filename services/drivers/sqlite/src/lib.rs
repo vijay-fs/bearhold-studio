@@ -11,8 +11,9 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
-    CellUpdate, ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest,
-    QueryResult, ResultColumn, Result, RowDelete, RowInsert, Schema, Value,
+    BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate, ConnectionProfile,
+    DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, ResultColumn, Result,
+    RowDelete, RowInsert, Schema, Value,
 };
 use sqlx::{
     sqlite::{Sqlite, SqlitePool, SqlitePoolOptions},
@@ -342,6 +343,62 @@ impl Driver for SqliteDriver {
         }
         let _ = tx.rollback().await;
         Ok(out)
+    }
+
+    async fn apply_batch(
+        &self,
+        profile: &ConnectionProfile,
+        statements: Vec<String>,
+    ) -> Result<BatchResult> {
+        let pool = self.pool_for(profile).await?;
+        let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
+        let mut results: Vec<BatchStatementResult> =
+            Vec::with_capacity(statements.len());
+        let mut failed_at: Option<usize> = None;
+        for (index, sql) in statements.iter().enumerate() {
+            if failed_at.is_some() {
+                results.push(BatchStatementResult {
+                    index,
+                    outcome: BatchStatementOutcome::Skipped,
+                });
+                continue;
+            }
+            match sqlx::query(sql).execute(&mut *tx).await {
+                Ok(res) => results.push(BatchStatementResult {
+                    index,
+                    outcome: BatchStatementOutcome::Ok {
+                        rows_affected: Some(res.rows_affected()),
+                    },
+                }),
+                Err(e) => {
+                    results.push(BatchStatementResult {
+                        index,
+                        outcome: BatchStatementOutcome::Fail {
+                            error: format!("{e}"),
+                        },
+                    });
+                    failed_at = Some(index);
+                }
+            }
+        }
+        if failed_at.is_some() {
+            let _ = tx.rollback().await;
+            Ok(BatchResult {
+                committed: false,
+                statements: results,
+                summary: format!(
+                    "rolled back: statement #{} failed",
+                    failed_at.unwrap() + 1
+                ),
+            })
+        } else {
+            tx.commit().await.map_err(map_sqlx_error)?;
+            Ok(BatchResult {
+                committed: true,
+                statements: results,
+                summary: format!("committed {} statements", statements.len()),
+            })
+        }
     }
 }
 

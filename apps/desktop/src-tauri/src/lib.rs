@@ -57,6 +57,7 @@ pub fn run() {
             commands::get_schema,
             commands::get_server_info,
             commands::dry_run_statements,
+            commands::apply_batch,
             commands::run_query,
             commands::set_secret,
             commands::has_secret,

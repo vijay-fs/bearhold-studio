@@ -29,6 +29,7 @@ import {
   Wrench,
   Download,
   Upload,
+  ScrollText,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -294,16 +295,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
         <div className="space-y-0.5 border-t px-2 py-1.5">
           <SidebarUtilityLink
-            href={'/diff' as Route}
-            label="Schema diff"
+            href={'/compare' as Route}
+            label="Compare"
             icon={<GitCompare className="h-3.5 w-3.5 shrink-0" />}
-            active={pathname === '/diff'}
-          />
-          <SidebarUtilityLink
-            href={'/data-diff' as Route}
-            label="Data diff"
-            icon={<Table2 className="h-3.5 w-3.5 shrink-0" />}
-            active={pathname === '/data-diff'}
+            active={pathname === '/compare' || pathname === '/diff' || pathname === '/data-diff'}
           />
           <SidebarUtilityLink
             href={'/export' as Route}
@@ -316,6 +311,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             label="Import"
             icon={<Upload className="h-3.5 w-3.5 shrink-0" />}
             active={pathname === '/import'}
+          />
+          <SidebarUtilityLink
+            href={'/migrations' as Route}
+            label="Migrations"
+            icon={<ScrollText className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/migrations'}
           />
         </div>
 

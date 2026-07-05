@@ -259,9 +259,21 @@ async fn run_pg_dump(
     cmd.arg("--file").arg(&opts.output_path);
 
     // Password via env var — visible only to the child process, not
-    // to `ps` on the machine.
-    if let Some(pw) = resolve_password(&opts.profile).await? {
-        cmd.env("PGPASSWORD", pw);
+    // to `ps` on the machine. If the profile advertises password auth
+    // but resolution finds nothing (secret missing, legacy field
+    // empty), fail LOUDLY here rather than let `pg_dump --no-password`
+    // die with a cryptic `fe_sendauth: no password supplied`.
+    let pw = resolve_password(&opts.profile).await?;
+    match (&opts.profile.auth, pw) {
+        (AuthMethod::Password { .. }, Some(pw)) => {
+            cmd.env("PGPASSWORD", pw);
+        }
+        (AuthMethod::Password { .. }, None) => {
+            return Err(ExportError::Secrets(
+                "profile is set to password auth but no password is stored — re-enter the password in the connection form".into(),
+            ));
+        }
+        _ => {}
     }
     // Ensure no stale PG* env vars leak from the parent shell if the
     // user happens to have them set for a different profile.
@@ -334,7 +346,19 @@ async fn run_mysqldump(
 
 async fn write_mysql_creds(profile: &ConnectionProfile) -> Result<PathBuf> {
     let user = user_from_auth(&profile.auth).unwrap_or_default();
-    let password = resolve_password(profile).await?.unwrap_or_default();
+    // Fail loud when password auth is advertised but resolution
+    // finds nothing — mysqldump's error otherwise is "Access denied
+    // for user 'x'@'host' (using password: NO)" which reads like an
+    // auth-server rejection rather than a client-side config bug.
+    let password = match resolve_password(profile).await? {
+        Some(pw) => pw,
+        None if matches!(profile.auth, AuthMethod::Password { .. }) => {
+            return Err(ExportError::Secrets(
+                "profile is set to password auth but no password is stored — re-enter the password in the connection form".into(),
+            ));
+        }
+        None => String::new(),
+    };
     let dir = std::env::temp_dir();
     let file_name = format!("bearhold-my-{}.cnf", Uuid::new_v4());
     let path = dir.join(file_name);
@@ -549,13 +573,25 @@ fn requires_password(auth: &AuthMethod) -> bool {
 }
 
 async fn resolve_password(profile: &ConnectionProfile) -> Result<Option<String>> {
-    if !matches!(profile.auth, AuthMethod::Password { .. }) {
-        return Ok(None);
+    let password_ref = match &profile.auth {
+        AuthMethod::Password { password_ref, .. } => password_ref,
+        _ => return Ok(None),
+    };
+    // Mirror the PG driver's resolution order EXACTLY:
+    //   1. If `password_ref` on the profile is non-empty, use its
+    //      literal value. This is the legacy inline path — early
+    //      dbstudio versions stored the password directly in the
+    //      profile JSON instead of the encrypted secrets store.
+    //   2. Otherwise fall back to `secrets::get(profile.id, Password)`.
+    //
+    // Missing this fallback was the root cause of "no password
+    // supplied" on export: a working connection profile using inline
+    // storage would return None from the store, we'd skip setting
+    // PGPASSWORD, and pg_dump's `--no-password` flag would fail
+    // immediately.
+    if !password_ref.is_empty() {
+        return Ok(Some(password_ref.clone()));
     }
-    // Password lookup follows the same shape drivers use: keyed by
-    // `(profile_id, Slot::Password)`. The `password_ref` inside
-    // AuthMethod is just a display placeholder — the actual value
-    // lives in the encrypted secrets store.
     let value = secrets::get(profile.id, Slot::Password)
         .await
         .map_err(|e| ExportError::Secrets(e.to_string()))?;

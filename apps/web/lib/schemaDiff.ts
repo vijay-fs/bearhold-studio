@@ -28,6 +28,12 @@ import {
   unknownVersion,
   type EngineVersion,
 } from './engineVersion';
+import {
+  parentFirstOrder,
+  childFirstOrder,
+  tableKey,
+  rankMap,
+} from './tableGraph';
 
 // Diff SQL is always quoted, never soft-quoted. The soft-quoter is for
 // SQL the user reads (open-table flow, autocomplete inserts) — it
@@ -51,6 +57,27 @@ export type DiffChangeKind =
   | 'add-index'
   | 'drop-index';
 
+/** Phase groups the change into a coarse "when does it run" bucket.
+ *  Ordering rule inside a single Apply batch:
+ *
+ *    1. `create`      — new tables (parents first, respecting FKs)
+ *    2. `alter-add`   — additive column changes (add / widen / nullable)
+ *    3. `alter-index` — new indexes
+ *    4. `drop-index`  — dropped indexes (before their columns leave)
+ *    5. `alter-drop`  — dropped columns (before their tables leave)
+ *    6. `drop`        — dropped tables (children first, respecting FKs)
+ *
+ *  Any FK-referencing tables under `create` land after the tables
+ *  they reference; drops go the other way. This is what stops the
+ *  "delete on products violates FK on order_items" class of error. */
+export type DiffPhase =
+  | 'create'
+  | 'alter-add'
+  | 'alter-index'
+  | 'drop-index'
+  | 'alter-drop'
+  | 'drop';
+
 export interface DiffChange {
   kind: DiffChangeKind;
   schema: string;
@@ -60,7 +87,39 @@ export interface DiffChange {
   /** Generated ALTER / CREATE / DROP statement to apply this change.
    *  Editable in the UI before execution. */
   sql: string;
+  /** Ordering phase. Populated by `diffSchemas` — the diff caller
+   *  can trust that iterating the returned array in order is
+   *  batch-apply-safe. */
+  phase: DiffPhase;
 }
+
+function phaseForKind(k: DiffChangeKind): DiffPhase {
+  switch (k) {
+    case 'create-table':
+      return 'create';
+    case 'add-column':
+    case 'alter-column-type':
+    case 'alter-column-nullable':
+      return 'alter-add';
+    case 'add-index':
+      return 'alter-index';
+    case 'drop-index':
+      return 'drop-index';
+    case 'drop-column':
+      return 'alter-drop';
+    case 'drop-table':
+      return 'drop';
+  }
+}
+
+const PHASE_RANK: Record<DiffPhase, number> = {
+  create: 0,
+  'alter-add': 1,
+  'alter-index': 2,
+  'drop-index': 3,
+  'alter-drop': 4,
+  drop: 5,
+};
 
 interface DiffOptions {
   engine: DatabaseEngine;
@@ -75,6 +134,8 @@ interface DiffOptions {
  *  output is grouped by table and ordered: creates first (so new
  *  tables exist before any FK references), then column mutations,
  *  then drops last (so dependents go before owners). */
+type RawChange = Omit<DiffChange, 'phase'>;
+
 export function diffSchemas(
   source: Schema,
   target: Schema,
@@ -83,7 +144,7 @@ export function diffSchemas(
   const { engine } = options;
   const version = options.sourceVersion ?? unknownVersion(engine);
   const caps = capabilities(version);
-  const changes: DiffChange[] = [];
+  const raw: RawChange[] = [];
 
   const sourceTables = indexTables(source);
   const targetTables = indexTables(target);
@@ -91,7 +152,7 @@ export function diffSchemas(
   // -- CREATE TABLE for every table in target but not source. -----------
   for (const [key, tt] of targetTables) {
     if (!sourceTables.has(key)) {
-      changes.push({
+      raw.push({
         kind: 'create-table',
         schema: tt.schema,
         table: tt.name,
@@ -105,8 +166,8 @@ export function diffSchemas(
   for (const [key, tt] of targetTables) {
     const st = sourceTables.get(key);
     if (!st) continue;
-    diffColumns(engine, caps, st, tt, changes);
-    diffIndexes(engine, caps, st, tt, changes);
+    diffColumns(engine, caps, st, tt, raw);
+    diffIndexes(engine, caps, st, tt, raw);
   }
 
   // -- DROP TABLE for every table in source but not target. Drops go
@@ -114,7 +175,7 @@ export function diffSchemas(
   // -- mutated table are also gone first.
   for (const [key, st] of sourceTables) {
     if (!targetTables.has(key)) {
-      changes.push({
+      raw.push({
         kind: 'drop-table',
         schema: st.schema,
         table: st.name,
@@ -124,7 +185,53 @@ export function diffSchemas(
     }
   }
 
-  return changes;
+  return orderChanges(raw, source, target);
+}
+
+/** Sort emitted changes into a batch-apply-safe order:
+ *   1. Bucket by phase (creates first, drops last)
+ *   2. Inside `create` — parent tables before children
+ *      (using the TARGET graph, because the CREATE order matches
+ *       the target's FK topology)
+ *   3. Inside `drop`   — child tables before parents
+ *      (using the SOURCE graph — that's the state at drop time)
+ *   4. Inside every other phase — group by table so all changes on
+ *      one table are contiguous, but tables themselves stay in
+ *      parent-first order for predictability.
+ *
+ *  The resulting `DiffChange[]` can be iterated top-to-bottom and
+ *  fed into an atomic transaction — no FK conflicts by construction. */
+function orderChanges(
+  raw: RawChange[],
+  source: Schema,
+  target: Schema,
+): DiffChange[] {
+  const targetRank = rankMap(parentFirstOrder(target));
+  const sourceRankReverse = rankMap(childFirstOrder(source));
+
+  const decorated = raw.map((c, originalIdx) => {
+    const phase = phaseForKind(c.kind);
+    const key = tableKey(c.schema, c.table);
+    // For drops, we want child-first ordering, so use the reversed
+    // source graph. Everything else uses parent-first from target.
+    const dependencyRank = (phase === 'drop' || phase === 'alter-drop')
+      ? sourceRankReverse.get(key) ?? Number.MAX_SAFE_INTEGER
+      : targetRank.get(key) ?? Number.MAX_SAFE_INTEGER;
+    return { c, phase, dependencyRank, originalIdx };
+  });
+
+  decorated.sort((a, b) => {
+    const pa = PHASE_RANK[a.phase];
+    const pb = PHASE_RANK[b.phase];
+    if (pa !== pb) return pa - pb;
+    if (a.dependencyRank !== b.dependencyRank) {
+      return a.dependencyRank - b.dependencyRank;
+    }
+    // Stable within a table: preserve emit order.
+    return a.originalIdx - b.originalIdx;
+  });
+
+  return decorated.map(({ c, phase }) => ({ ...c, phase }));
 }
 
 function indexTables(schema: Schema): Map<string, Table> {
@@ -142,7 +249,7 @@ function diffColumns(
   caps: ReturnType<typeof capabilities>,
   source: Table,
   target: Table,
-  changes: DiffChange[],
+  changes: RawChange[],
 ): void {
   const sCols = new Map(source.columns.map((c) => [c.name, c]));
   const tCols = new Map(target.columns.map((c) => [c.name, c]));
@@ -217,7 +324,7 @@ function diffIndexes(
   caps: ReturnType<typeof capabilities>,
   source: Table,
   target: Table,
-  changes: DiffChange[],
+  changes: RawChange[],
 ): void {
   // Indexes are diffed by name. Skip primary indexes — those follow the
   // primary-key constraint, which we don't try to alter automatically.
@@ -245,10 +352,53 @@ function diffIndexes(
         schema: source.schema,
         table: source.name,
         label: `Drop index ${name}`,
-        sql: `DROP INDEX ${ident(name, quoteStyleForEngine(engine))};`,
+        sql: buildDropIndex(engine, caps, source.schema, source.name, name),
       });
     }
   }
+}
+
+/** Engine-correct `DROP INDEX`. The previous version used a bare
+ *  index name for every engine, which is wrong two different ways:
+ *
+ *    - Postgres: indexes live in a schema. Without qualification,
+ *      PG resolves the name against `search_path`; the default
+ *      `"$user", public` skips schemas like `shop`, so a valid
+ *      index reads as "does not exist".
+ *    - MySQL: `DROP INDEX name` alone is a syntax error; the correct
+ *      form is `DROP INDEX name ON table`.
+ *
+ *  We now emit:
+ *    PG      →  DROP INDEX IF EXISTS "schema"."name"
+ *    MySQL   →  DROP INDEX `name` ON `schema`.`table`
+ *    SQLite  →  DROP INDEX IF EXISTS "name"   (indexes are global)
+ *
+ *  `IF EXISTS` is added when the capability model reports the
+ *  engine supports it — that also makes the statement safely
+ *  re-runnable if it accidentally lands in a batch twice. */
+function buildDropIndex(
+  engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
+  schema: string,
+  table: string,
+  name: string,
+): string {
+  const style = quoteStyleForEngine(engine);
+  const idName = ident(name, style);
+  const ifExists = caps.createIndexIfNotExists ? ' IF EXISTS' : '';
+  if (engine === 'mysql') {
+    return `ALTER TABLE ${tableRef(engine, schema, table)} DROP INDEX ${idName};`;
+  }
+  if (engine === 'sqlite') {
+    return `DROP INDEX${ifExists} ${idName};`;
+  }
+  // Postgres (+ future Cockroach). Schema-qualify so we don't rely
+  // on the driver session's search_path.
+  const qualified =
+    schema && engine === 'postgres'
+      ? `${ident(schema, style)}.${idName}`
+      : idName;
+  return `DROP INDEX${ifExists} ${qualified};`;
 }
 
 // ---- SQL builders ------------------------------------------------------

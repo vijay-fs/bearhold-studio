@@ -25,7 +25,10 @@
     "test:e2e:up": "docker compose -f infra/test/docker-compose.yml up -d",
     "test:e2e:down": "docker compose -f infra/test/docker-compose.yml down -v",
     "test:e2e": "tsx scripts/test-e2e/index.ts",
-    "test:e2e:one": "tsx scripts/test-e2e/index.ts --target"
+    "test:e2e:one": "tsx scripts/test-e2e/index.ts --target",
+    "demo:up": "docker compose -f infra/compare-demo/docker-compose.yml up -d",
+    "demo:down": "docker compose -f infra/compare-demo/docker-compose.yml down -v",
+    "demo:status": "docker compose -f infra/compare-demo/docker-compose.yml ps"
   },
   "devDependencies": {
     "prettier": "^3.4.2",

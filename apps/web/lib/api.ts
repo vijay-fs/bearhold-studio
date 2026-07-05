@@ -96,6 +96,31 @@ export const api = {
     return invoke('dry_run_statements', { profile, statements });
   },
 
+  /** Apply a batch of SQL statements atomically. On PG/SQLite the
+   *  whole batch is one transaction — failure means nothing lands.
+   *  On MySQL a pure-DML batch is atomic; DDL batches run one-by-one
+   *  with stop-on-error and the result honestly reports the state.
+   *
+   *  Use this instead of a loop of `runQuery` when the caller needs
+   *  either the "all-or-nothing" guarantee or a per-statement log
+   *  for migration history. */
+  applyBatch(
+    profile: ConnectionProfile,
+    statements: string[],
+  ): Promise<{
+    committed: boolean;
+    summary: string;
+    statements: Array<{
+      index: number;
+      outcome:
+        | { kind: 'ok'; rows_affected: number | null }
+        | { kind: 'fail'; error: string }
+        | { kind: 'skipped' };
+    }>;
+  }> {
+    return invoke('apply_batch', { profile, statements });
+  },
+
   runQuery(profile: ConnectionProfile, request: QueryRequest): Promise<QueryResult> {
     return invoke('run_query', { profile, request });
   },

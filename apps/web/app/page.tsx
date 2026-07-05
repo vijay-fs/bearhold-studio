@@ -745,18 +745,12 @@ function UtilityRail() {
           <PlatformShortcut keys={['K']} />
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
         <ToolTile
-          href="/diff"
+          href="/compare"
           icon={<GitCompare className="h-4 w-4" />}
-          label="Schema diff"
-          description="Compare + generate ALTER SQL"
-        />
-        <ToolTile
-          href="/data-diff"
-          icon={<Rows3 className="h-4 w-4" />}
-          label="Data diff"
-          description="Row-level compare + sync"
+          label="Compare"
+          description="Schema + data diff, apply generated SQL"
         />
         <ToolTile
           href="/export"

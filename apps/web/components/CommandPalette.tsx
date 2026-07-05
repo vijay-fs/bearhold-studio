@@ -187,15 +187,15 @@ export function CommandPalette() {
             />
             <PaletteItem
               icon={<GitCompare className="h-3.5 w-3.5" />}
-              label="Schema diff"
-              keywords={['diff', 'schema', 'compare']}
-              onSelect={() => go('/diff' as Route)}
+              label="Compare — Schema"
+              keywords={['diff', 'schema', 'compare', 'ddl']}
+              onSelect={() => go('/compare?tab=schema' as Route)}
             />
             <PaletteItem
               icon={<Table2 className="h-3.5 w-3.5" />}
-              label="Data diff"
-              keywords={['diff', 'data', 'rows', 'compare']}
-              onSelect={() => go('/data-diff' as Route)}
+              label="Compare — Tables"
+              keywords={['diff', 'data', 'rows', 'compare', 'dml']}
+              onSelect={() => go('/compare?tab=tables' as Route)}
             />
             <PaletteItem
               icon={<Download className="h-3.5 w-3.5" />}

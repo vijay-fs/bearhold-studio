@@ -84,6 +84,30 @@ pub trait Driver: Send + Sync {
             "dry_run not implemented by this driver".into(),
         ))
     }
+
+    /// Apply a batch of SQL statements atomically. Opens a SINGLE
+    /// connection, wraps everything in `BEGIN` / `COMMIT`, and rolls
+    /// back on the first failure. Returns per-statement outcomes so
+    /// the UI can render "3/12 applied, statement 4 failed" without
+    /// a second round trip.
+    ///
+    /// Engine caveats:
+    ///   - PG / SQLite: fully transactional including DDL, so an
+    ///     atomic rollback truly restores the pre-batch state.
+    ///   - MySQL: DDL implicitly commits mid-transaction. This means
+    ///     a DDL failure LEAVES prior DDL committed — the driver
+    ///     still surfaces which statement failed, but automatic
+    ///     rollback isn't possible for DDL. DML batches are fully
+    ///     transactional.
+    async fn apply_batch(
+        &self,
+        _profile: &ConnectionProfile,
+        _statements: Vec<String>,
+    ) -> Result<BatchResult> {
+        Err(DbError::Unsupported(
+            "apply_batch not implemented by this driver".into(),
+        ))
+    }
 }
 
 /// Outcome of dry-running one SQL statement. Kept in this crate so
@@ -100,4 +124,37 @@ pub enum LintOutcome {
 pub struct LintResult {
     pub index: usize,
     pub outcome: LintOutcome,
+}
+
+/// Per-statement outcome inside an atomic batch apply.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BatchStatementOutcome {
+    /// Statement executed successfully. `rows_affected` is populated
+    /// when the driver can supply it (DML paths); `None` on DDL.
+    Ok { rows_affected: Option<u64> },
+    /// Statement rejected by the server. Everything that ran before
+    /// this in the batch was rolled back on transactional engines;
+    /// on MySQL DDL, prior DDL statements have already committed.
+    Fail { error: String },
+    /// Not attempted because an earlier statement in the batch
+    /// failed and the transaction was rolled back.
+    Skipped,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BatchStatementResult {
+    pub index: usize,
+    pub outcome: BatchStatementOutcome,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct BatchResult {
+    /// True when every statement ran and the transaction committed.
+    pub committed: bool,
+    /// Per-statement outcomes, in the input order.
+    pub statements: Vec<BatchStatementResult>,
+    /// Human-readable summary — surfaced verbatim in the UI when
+    /// `committed = false`.
+    pub summary: String,
 }

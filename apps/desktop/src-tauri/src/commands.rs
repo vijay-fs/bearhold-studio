@@ -1,8 +1,8 @@
 use dbstudio_core::{
     secrets::{self, Slot},
     server_info::ServerInfo,
-    ssh_tunnel, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, LintResult, QueryRequest,
-    QueryResult, RowDelete, RowInsert, Schema,
+    ssh_tunnel, BatchResult, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, LintResult,
+    QueryRequest, QueryResult, RowDelete, RowInsert, Schema,
 };
 use serde::Serialize;
 use tauri::State;
@@ -107,6 +107,25 @@ pub async fn dry_run_statements(
         .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
     let results = driver.dry_run(&profile, statements).await?;
     Ok(results)
+}
+
+/// Apply a batch of SQL statements atomically. On PG/SQLite the
+/// whole batch is one transaction — any failure rolls back and
+/// nothing lands. On MySQL a pure-DML batch is also atomic; a batch
+/// containing DDL runs one-by-one with stop-on-error, and the
+/// returned result honestly reports which prior statements had
+/// already committed.
+#[tauri::command]
+pub async fn apply_batch(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    statements: Vec<String>,
+) -> CommandResult<BatchResult> {
+    let driver = state
+        .driver_for(profile.engine)
+        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
+    let result = driver.apply_batch(&profile, statements).await?;
+    Ok(result)
 }
 
 #[tauri::command]

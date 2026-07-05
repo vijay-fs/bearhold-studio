@@ -225,8 +225,21 @@ async fn run_pg_import(
         cmd.arg(&opts.source_path);
     }
 
-    if let Some(pw) = resolve_password(&opts.profile).await? {
-        cmd.env("PGPASSWORD", pw);
+    // Same explicit guard as export: fail loud when the profile
+    // advertises password auth but resolution finds nothing, so the
+    // user gets a "re-enter password" message instead of psql's
+    // opaque `fe_sendauth: no password supplied`.
+    let pw = resolve_password(&opts.profile).await?;
+    match (&opts.profile.auth, pw) {
+        (AuthMethod::Password { .. }, Some(pw)) => {
+            cmd.env("PGPASSWORD", pw);
+        }
+        (AuthMethod::Password { .. }, None) => {
+            return Err(ImportError::Secrets(
+                "profile is set to password auth but no password is stored — re-enter the password in the connection form".into(),
+            ));
+        }
+        _ => {}
     }
     for var in ["PGHOST", "PGPORT", "PGUSER", "PGDATABASE"] {
         cmd.env_remove(var);
@@ -284,7 +297,15 @@ async fn run_mysql_import(
 
 async fn write_mysql_creds(profile: &ConnectionProfile) -> Result<PathBuf> {
     let user = user_from_auth(&profile.auth).unwrap_or_default();
-    let password = resolve_password(profile).await?.unwrap_or_default();
+    let password = match resolve_password(profile).await? {
+        Some(pw) => pw,
+        None if matches!(profile.auth, AuthMethod::Password { .. }) => {
+            return Err(ImportError::Secrets(
+                "profile is set to password auth but no password is stored — re-enter the password in the connection form".into(),
+            ));
+        }
+        None => String::new(),
+    };
     let dir = std::env::temp_dir();
     let file_name = format!("bearhold-my-imp-{}.cnf", Uuid::new_v4());
     let path = dir.join(file_name);
@@ -432,8 +453,15 @@ fn requires_password(auth: &AuthMethod) -> bool {
 }
 
 async fn resolve_password(profile: &ConnectionProfile) -> Result<Option<String>> {
-    if !matches!(profile.auth, AuthMethod::Password { .. }) {
-        return Ok(None);
+    let password_ref = match &profile.auth {
+        AuthMethod::Password { password_ref, .. } => password_ref,
+        _ => return Ok(None),
+    };
+    // Same two-tier lookup the PG driver uses: inline value first
+    // (legacy stored profiles), then the encrypted secrets store.
+    // See dump/export.rs::resolve_password for the full rationale.
+    if !password_ref.is_empty() {
+        return Ok(Some(password_ref.clone()));
     }
     let value = secrets::get(profile.id, Slot::Password)
         .await

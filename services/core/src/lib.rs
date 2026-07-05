@@ -16,7 +16,9 @@ pub mod ssh_tunnel;
 pub use connection::{
     AuthMethod, ConnectionProfile, DatabaseEngine, SshAuth, SshTunnel, TlsMode,
 };
-pub use driver::{Driver, LintOutcome, LintResult};
+pub use driver::{
+    BatchResult, BatchStatementOutcome, BatchStatementResult, Driver, LintOutcome, LintResult,
+};
 pub use error::{DbError, Result};
 pub use query::{CellUpdate, QueryRequest, QueryResult, ResultColumn, RowDelete, RowInsert, Value};
 pub use schema::{
