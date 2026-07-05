@@ -73,7 +73,7 @@ function ImportPageInner() {
   const bundle = useToolCache((s) =>
     bundleKey ? s.bundles.find((b) => b.bundle_key === bundleKey) : undefined,
   );
-  const toolReady = bundle?.installed ?? false;
+  const toolReady = bundle?.ready ?? false;
 
   const pickFile = async () => {
     const { open } = await import('@tauri-apps/plugin-dialog');
@@ -175,10 +175,13 @@ function ImportPageInner() {
             />
           )}
 
-        {target && bundleKey && !toolReady && (
+        {/* Always render the tool status when a target is chosen —
+            green "ready" panel or install prompt, depending on state.
+            See export/page.tsx for the same reasoning. */}
+        {target && bundleKey && (
           <ToolInstallPrompt
             bundleKey={bundleKey}
-            title={`${ENGINE_LABELS[target.engine]} tools needed`}
+            title={`${ENGINE_LABELS[target.engine]} tools`}
             onInstalled={() => void refreshTools()}
           />
         )}

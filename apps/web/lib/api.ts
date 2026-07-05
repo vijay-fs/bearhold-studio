@@ -123,6 +123,14 @@ export const api = {
     return invoke('detect_dump_format', { path });
   },
 
+  /** Byte-size of a file on disk, or 0 if it doesn't exist. Cheap
+   *  fs::metadata call; used by the Export page to backfill the
+   *  "Wrote N B" display when the progress stream missed the final
+   *  tick (e.g. SQLite fs::copy). */
+  fileSize(path: string): Promise<number> {
+    return invoke('file_size', { path });
+  },
+
   // ---- Export -----------------------------------------------------
   startExport(options: ExportOptions): Promise<ExportResult> {
     return invoke('start_export', { options });

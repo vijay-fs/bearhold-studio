@@ -85,6 +85,7 @@ pub fn run() {
             tools::install_tool_bundle,
             tools::uninstall_tool_bundle,
             dump::detect_dump_format,
+            dump::file_size,
             dump::start_export,
             dump::cancel_export,
             dump::start_import,

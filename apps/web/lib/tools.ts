@@ -11,20 +11,41 @@ import type { ConnectionProfile } from './types';
 
 export interface InstalledTool {
   name: string;
-  /** Absolute path to the executable. null when not yet installed. */
+  /** Absolute path to the bundled executable (app-data cache). null
+   *  when the bundle isn't installed. */
   path: string | null;
+  /** Absolute path to a PATH-resolved system executable, if any.
+   *  Independent of `path` — a user with Homebrew's pg_dump linked
+   *  has a `system_path` even when nothing is bundled. */
+  system_path: string | null;
 }
 
 export interface ToolBundleStatus {
   bundle_key: string;
   display_name: string;
   tool_version: string;
+  /** True when a downloaded bundle exists in the app-data cache. */
   installed: boolean;
+  /** True when EVERY tool in `tools` was found on the system PATH. */
+  system_available: boolean;
+  /** `installed || system_available`. Use this to gate the
+   *  workflow — don't require a download when the OS already has
+   *  the tools. */
+  ready: boolean;
   install_dir: string | null;
   tools: InstalledTool[];
   covers_engines: string[];
   download_size_bytes: number | null;
   download_url: string | null;
+  download_host: string | null;
+  /** False when the manifest still points at a placeholder URL.
+   *  The UI hides the download button and only shows the install
+   *  hint in that case. */
+  download_available: boolean;
+  /** OS-specific one-liner the user can paste to install the bundle
+   *  themselves (e.g. `brew install libpq`). Null on unsupported
+   *  platforms. */
+  install_hint: string | null;
 }
 
 /** Progress event emitted as `dbstudio://tool/progress` during

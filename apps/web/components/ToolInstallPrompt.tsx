@@ -1,20 +1,37 @@
 'use client';
 
-// The "Download & Install (18 MB)" prompt.
+// Tool-bundle status + install prompt.
 //
-// Renders when a page (Export, Import, Settings/Tools) needs a native
-// tool bundle that isn't installed yet. Owns:
-//   - a listener for `dbstudio://tool/progress` while the install runs
-//   - the download-progress bar
-//   - error state
+// Three rendering states, resolved in this order:
 //
-// Callers pass the bundle they need. The component fetches its status
-// from `useToolCache` — that store is the source of truth so an
-// install started here also updates the Tools settings page and vice
-// versa.
+//   1. `bundle.ready` — installed from the bundle cache OR every tool
+//      was found on the system PATH. Renders a compact green
+//      "using X from Y" panel with no CTA. The workflow can proceed.
+//
+//   2. `bundle.download_available` — the manifest has a real hosted
+//      URL. Shows the "Download & install (18 MB)" button and,
+//      while running, a progress bar fed by
+//      `dbstudio://tool/progress`.
+//
+//   3. Otherwise — the manifest URL is still a placeholder OR no
+//      asset exists for this platform. Instead of a broken network
+//      call we surface the OS-specific install one-liner
+//      (`brew install libpq`, `apt-get install postgresql-client`, …)
+//      with a copy button.
+//
+// The store is the source of truth so an install started here also
+// updates the Tools settings page, the Export page, etc.
 
 import { useEffect, useState } from 'react';
-import { AlertCircle, CheckCircle2, Download, Loader2 } from 'lucide-react';
+import {
+  AlertCircle,
+  CheckCircle2,
+  Copy,
+  Download,
+  ExternalLink,
+  Loader2,
+  Terminal,
+} from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
 import { useToolCache } from '@/store/toolCache';
@@ -50,21 +67,13 @@ export function ToolInstallPrompt({
   const applyProgress = useToolCache((s) => s.applyProgress);
   const progress = useToolCache((s) => s.progress[bundleKey] ?? null);
 
-  const [status, setStatus] = useState<
-    'idle' | 'installing' | 'error'
-  >('idle');
+  const [status, setStatus] = useState<'idle' | 'installing' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
 
-  // First mount: kick a status refresh so `bundle` is populated. Cheap
-  // and idempotent thanks to the store.
   useEffect(() => {
     if (!bundle) void refresh();
   }, [bundle, refresh]);
 
-  // Progress event bridge: the Rust downloader emits
-  // `dbstudio://tool/progress`; we translate it into store updates
-  // for the active install. Only mounted while `installing` so we
-  // don't attach a listener when idle.
   useEffect(() => {
     if (status !== 'installing') return;
     let unlisten: (() => void) | undefined;
@@ -112,25 +121,95 @@ export function ToolInstallPrompt({
     );
   }
 
-  if (bundle.installed) {
+  // ---- State 1: ready (either bundle installed OR system PATH) ----
+
+  if (bundle.ready) {
+    // Prefer the system-path label when available — that's what most
+    // users will recognise ("Using /usr/local/opt/libpq/bin/pg_dump").
+    // Fall back to the bundle version string when we downloaded it.
+    const firstTool = bundle.tools[0];
+    const sourceLabel = bundle.system_available
+      ? firstTool?.system_path
+        ? `Using system tools · ${firstTool.system_path}`
+        : 'Using system tools on PATH'
+      : `Using downloaded bundle · v${bundle.tool_version}`;
     return (
       <div
         className={cn(
-          'flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm',
+          'flex items-center gap-3 rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm',
           className,
         )}
       >
-        <CheckCircle2 className="h-4 w-4 text-emerald-600" />
-        <span>
-          <span className="font-medium">{bundle.display_name}</span>
-          <span className="text-muted-foreground">
-            {' '}
-            v{bundle.tool_version} · installed
-          </span>
-        </span>
+        <CheckCircle2 className="h-4 w-4 shrink-0 text-emerald-600" />
+        <div className="min-w-0 flex-1">
+          <p className="font-medium">
+            {bundle.display_name}
+            <span className="ml-2 text-[10px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+              Ready
+            </span>
+          </p>
+          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+            {sourceLabel}
+          </p>
+        </div>
       </div>
     );
   }
+
+  // ---- State 3: download unavailable — show install hint ---------
+  // We check this BEFORE state 2 (download button) because when the
+  // manifest is a placeholder we should never render a broken CTA.
+
+  if (!bundle.download_available) {
+    return (
+      <div
+        className={cn('rounded-lg border bg-card p-5', className)}
+      >
+        <div className="flex items-start gap-3">
+          <div className="mt-0.5 flex h-8 w-8 items-center justify-center rounded-md bg-amber-500/10 text-amber-700 dark:text-amber-300">
+            <Terminal className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-sm font-semibold">
+              {title ?? `${bundle.display_name} needed`}
+            </h3>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              {subtitle ??
+                `Install ${bundle.display_name.toLowerCase()} with your OS package manager. Bearhold picks them up from PATH automatically.`}
+            </p>
+          </div>
+        </div>
+
+        {bundle.install_hint && (
+          <InstallHintBlock hint={bundle.install_hint} onDone={() => void refresh()} />
+        )}
+
+        {!bundle.install_hint && (
+          <p className="mt-4 rounded border border-dashed p-3 text-[11px] text-muted-foreground">
+            No install hint for your OS. Install the {bundle.display_name}{' '}
+            manually — Bearhold picks up any binary named{' '}
+            <code className="rounded bg-muted px-1 py-0.5">
+              {bundle.tools[0]?.name ?? 'the tool'}
+            </code>{' '}
+            on PATH.
+          </p>
+        )}
+
+        <div className="mt-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+          <button
+            type="button"
+            onClick={() => void refresh()}
+            className="inline-flex items-center gap-1 rounded border px-2 py-1 hover:bg-accent"
+          >
+            <Loader2 className="h-3 w-3" /> Re-check
+          </button>
+          <span>after installing, Bearhold will detect it on next check.</span>
+        </div>
+      </div>
+    );
+  }
+
+  // ---- State 2: download available -------------------------------
 
   const percent =
     progress?.phase === 'downloading' && progress.total > 0
@@ -155,9 +234,9 @@ export function ToolInstallPrompt({
           </h3>
           <p className="mt-0.5 text-xs text-muted-foreground">
             {subtitle ??
-              `We'll download the ${bundle.display_name.toLowerCase()} into your Bearhold data directory (${formatBytes(
+              `We'll download ${bundle.display_name} into your Bearhold data directory (${formatBytes(
                 bundle.download_size_bytes,
-              )}) so exports and imports for this engine can run.`}
+              )}).`}
           </p>
         </div>
       </div>
@@ -167,9 +246,7 @@ export function ToolInstallPrompt({
           <div className="h-1.5 w-full overflow-hidden rounded bg-muted">
             <div
               className="h-full bg-primary transition-all"
-              style={{
-                width: percent != null ? `${percent}%` : '20%',
-              }}
+              style={{ width: percent != null ? `${percent}%` : '20%' }}
             />
           </div>
           <p className="text-[11px] text-muted-foreground">
@@ -185,7 +262,7 @@ export function ToolInstallPrompt({
         </div>
       )}
 
-      <div className="mt-4 flex items-center gap-2">
+      <div className="mt-4 flex items-center gap-3">
         <Button size="sm" onClick={onInstall} disabled={status === 'installing'}>
           {status === 'installing' ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -196,15 +273,80 @@ export function ToolInstallPrompt({
             ? 'Installing…'
             : `Download & install (${formatBytes(bundle.download_size_bytes)})`}
         </Button>
-        {bundle.download_url && (
-          <span
-            className="max-w-md truncate text-[10px] text-muted-foreground"
-            title={bundle.download_url}
-          >
-            from {new URL(bundle.download_url).hostname}
+        {bundle.download_host && (
+          <span className="text-[10px] text-muted-foreground">
+            from {bundle.download_host}
           </span>
         )}
       </div>
+
+      {/* If the hosted download exists but the user prefers their own
+          install, still surface the OS-native option. Shown collapsed
+          so it doesn't compete with the primary CTA above. */}
+      {bundle.install_hint && (
+        <details className="mt-4 rounded border bg-muted/30 p-3 text-xs">
+          <summary className="cursor-pointer text-muted-foreground">
+            Prefer to install it yourself?
+          </summary>
+          <InstallHintBlock hint={bundle.install_hint} onDone={() => void refresh()} />
+        </details>
+      )}
+    </div>
+  );
+}
+
+function InstallHintBlock({
+  hint,
+  onDone,
+}: {
+  hint: string;
+  onDone: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const looksLikeUrl = hint.includes('http://') || hint.includes('https://');
+  const url = looksLikeUrl
+    ? hint.match(/https?:\/\/\S+/)?.[0] ?? null
+    : null;
+
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(hint);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      /* silent */
+    }
+  };
+
+  return (
+    <div className="mt-4 flex items-center gap-2 rounded border bg-background p-2 font-mono text-[12px]">
+      <span className="text-muted-foreground/60">$</span>
+      <code className="flex-1 truncate">{hint}</code>
+      <button
+        type="button"
+        onClick={copy}
+        className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent"
+        title="Copy to clipboard"
+      >
+        {copied ? (
+          <CheckCircle2 className="h-3 w-3 text-emerald-600" />
+        ) : (
+          <Copy className="h-3 w-3" />
+        )}
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+      {url && (
+        <a
+          href={url}
+          target="_blank"
+          rel="noreferrer"
+          className="inline-flex items-center gap-1 rounded px-2 py-0.5 text-[10px] font-medium text-muted-foreground hover:bg-accent"
+          onClick={onDone}
+        >
+          <ExternalLink className="h-3 w-3" />
+          Open
+        </a>
+      )}
     </div>
   );
 }

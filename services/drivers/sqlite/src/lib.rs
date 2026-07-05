@@ -52,6 +52,25 @@ impl SqliteDriver {
         self.pools.insert(profile.id, pool.clone());
         Ok(pool)
     }
+
+    /// Flush the WAL into the main database file and truncate it.
+    /// Required before the "file copy" export path — modern SQLite
+    /// defaults to WAL journalling, which means recent writes live in
+    /// a `-wal` sidecar file until the next checkpoint. Copying only
+    /// the main `.sqlite` file without a checkpoint would produce an
+    /// almost-empty snapshot even for a large database.
+    ///
+    /// `TRUNCATE` mode does a full checkpoint AND shrinks the WAL to
+    /// 0 bytes, so a subsequent `fs::copy` produces a byte-accurate,
+    /// self-contained snapshot.
+    pub async fn checkpoint_wal(&self, profile: &ConnectionProfile) -> Result<()> {
+        let pool = self.pool_for(profile).await?;
+        sqlx::query("PRAGMA wal_checkpoint(TRUNCATE);")
+            .execute(&pool)
+            .await
+            .map_err(map_sqlx_error)?;
+        Ok(())
+    }
 }
 
 impl Default for SqliteDriver {

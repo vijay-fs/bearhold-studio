@@ -74,7 +74,10 @@ function ExportPageInner() {
   const bundle = useToolCache((s) =>
     bundleKey ? s.bundles.find((b) => b.bundle_key === bundleKey) : undefined,
   );
-  const toolReady = bundle?.installed ?? false;
+  // Ready = bundle downloaded OR every tool found on system PATH.
+  // Most macOS/Linux users have pg_dump / mysqldump already, so we
+  // skip the download prompt entirely for them.
+  const toolReady = bundle?.ready ?? false;
   const engineSupported = source ? SUPPORTED_ENGINES.has(source.engine) : false;
   // SQLite file-copy needs no external tool, so we short-circuit
   // the install gate for that specific case below.
@@ -107,16 +110,23 @@ function ExportPageInner() {
           <NotSupported engine={source.engine} />
         )}
 
-        {source && engineSupported && bundleKey && !toolReady && (
+        {/* Tool status is always rendered when a source is picked:
+            green "ready" panel when the tools are already available
+            (bundle installed OR on system PATH), or the download +
+            install-hint prompt when they're not. Keeping the panel
+            visible in the ready case gives the user confidence about
+            which binary the run will actually use. */}
+        {source && engineSupported && bundleKey && (
           <ToolInstallPrompt
             bundleKey={bundleKey}
-            title={`${ENGINE_LABELS[source.engine]} tools needed`}
-            subtitle={`We need to download ${bundle?.display_name ?? 'the tool bundle'} before we can dump this database.`}
+            title={`${ENGINE_LABELS[source.engine]} tools`}
+            subtitle={
+              toolReady
+                ? undefined
+                : `Bearhold needs ${bundle?.display_name ?? 'these tools'} to dump this database.`
+            }
             onInstalled={() => {
               void refreshTools();
-              // The install command emits progress events over the
-              // same bus; the store already applies them. Nothing
-              // else needed.
               applyToolProgress({
                 bundle_key: bundleKey,
                 phase: 'done',
@@ -150,6 +160,16 @@ function ExportRunner({ source }: { source: ConnectionProfile }) {
   const [run, setRun] = useState<RunState>({ kind: 'idle' });
   const [log, setLog] = useState<string[]>([]);
   const [bytesWritten, setBytesWritten] = useState(0);
+  // Ref mirror of `bytesWritten`. The `start` async function runs
+  // for the whole duration of the export; its closure captures the
+  // state variable at call time and never sees updates from the
+  // event listener. Reading `bytesWrittenRef.current` in the final
+  // `setRun({ kind: 'ok', ...})` step is the fix — the ref is always
+  // the latest value.
+  const bytesWrittenRef = useRef(0);
+  useEffect(() => {
+    bytesWrittenRef.current = bytesWritten;
+  }, [bytesWritten]);
   const logRef = useRef<HTMLDivElement>(null);
 
   const pickDest = async () => {
@@ -203,7 +223,9 @@ function ExportRunner({ source }: { source: ConnectionProfile }) {
     if (!outputPath) return;
     setLog([]);
     setBytesWritten(0);
-    setRun({ kind: 'running', jobId: 'pending', startedAt: Date.now() });
+    bytesWrittenRef.current = 0;
+    const startedAt = Date.now();
+    setRun({ kind: 'running', jobId: 'pending', startedAt });
     try {
       const tables = tablesRaw
         .split(/[\s,]+/)
@@ -221,12 +243,20 @@ function ExportRunner({ source }: { source: ConnectionProfile }) {
         single_transaction: singleTx,
         parallel_jobs: null,
       });
-      const elapsed = Date.now() - (run.kind === 'running' ? run.startedAt : Date.now());
+      // Read the latest byte count from the ref (state closure is
+      // stale). Also fall back to a live stat of the output file so
+      // even engines that don't emit the final progress event show
+      // the real size — this is what fixed the "Wrote 0 B" bug on
+      // SQLite exports.
+      let finalBytes = bytesWrittenRef.current;
+      if (finalBytes === 0) {
+        finalBytes = await statFileSize(result.output_path);
+      }
       setRun({
         kind: 'ok',
         outputPath: result.output_path,
-        bytes: bytesWritten,
-        elapsedMs: elapsed,
+        bytes: finalBytes,
+        elapsedMs: Date.now() - startedAt,
       });
     } catch (e: unknown) {
       const err = e as { message?: string };
@@ -548,6 +578,18 @@ function appendCapped(prev: string[], line: string, cap: number): string[] {
   const next = [...prev, line];
   if (next.length > cap) next.splice(0, next.length - cap);
   return next;
+}
+
+/** Byte-size of the output file on disk, via a lightweight Rust
+ *  fs::metadata call. Errors are swallowed to 0 — we treat "can't
+ *  stat" as "we don't know" and let the caller decide what to
+ *  render. */
+async function statFileSize(path: string): Promise<number> {
+  try {
+    return await api.fileSize(path);
+  } catch {
+    return 0;
+  }
 }
 
 export default function ExportPage() {

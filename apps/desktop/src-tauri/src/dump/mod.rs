@@ -37,6 +37,19 @@ pub async fn detect_dump_format(path: String) -> Result<DumpProbe, String> {
     probe(&p).map_err(|e| e.to_string())
 }
 
+/// Return the byte-size of `path` on disk, or 0 if it doesn't exist.
+/// Used by the Export page as a fallback when the byte-count stream
+/// didn't reach the UI (e.g. SQLite `fs::copy` completes in
+/// milliseconds with no intermediate progress event).
+#[tauri::command]
+pub async fn file_size(path: String) -> Result<u64, String> {
+    let p = PathBuf::from(path);
+    match std::fs::metadata(&p) {
+        Ok(md) => Ok(md.len()),
+        Err(_) => Ok(0),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum ExportEvent {
@@ -89,6 +102,7 @@ pub struct ExportResult {
 pub async fn start_export(
     app: AppHandle,
     registry: State<'_, Arc<ExportRegistry>>,
+    state: State<'_, crate::state::AppState>,
     options: ExportOptions,
 ) -> Result<ExportResult, String> {
     let job_id = Uuid::new_v4();
@@ -100,6 +114,11 @@ pub async fn start_export(
         app_data_dir: data_dir,
         registry: registry.inner().clone(),
         job_id,
+        // Handing the SQLite driver Arc through means the WAL
+        // checkpoint runs against the app-wide pool (same one the
+        // SQL editor uses), not a fresh one — which matters when the
+        // file has an active writer sitting in the sidebar.
+        sqlite_driver: state.inner().sqlite.clone(),
     };
     let sink: Arc<dyn ExportProgressSink> = Arc::new(AppExportSink {
         app: app.clone(),

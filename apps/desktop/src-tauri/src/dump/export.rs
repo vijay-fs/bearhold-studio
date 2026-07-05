@@ -135,6 +135,11 @@ pub struct ExportContext {
     pub app_data_dir: PathBuf,
     pub registry: Arc<ExportRegistry>,
     pub job_id: Uuid,
+    /// SQLite driver handle — reuses the app-wide connection pool so
+    /// the WAL checkpoint runs against the same file the SQL editor
+    /// has open, not a stale copy. Only used by the SQLite export
+    /// path; PG/MySQL don't touch it.
+    pub sqlite_driver: Arc<dbstudio_driver_sqlite::SqliteDriver>,
 }
 
 pub trait ExportProgressSink: Send + Sync {
@@ -162,7 +167,7 @@ pub async fn run_export(
             run_pg_dump(&ctx, &opts, sink.clone()).await
         }
         DatabaseEngine::MySql => run_mysqldump(&ctx, &opts, sink.clone()).await,
-        DatabaseEngine::Sqlite => run_sqlite_export(&opts, sink.clone()).await,
+        DatabaseEngine::Sqlite => run_sqlite_export(&ctx, &opts, sink.clone()).await,
         e => Err(ExportError::UnsupportedEngine { engine: e }),
     };
 
@@ -353,8 +358,9 @@ async fn write_mysql_creds(profile: &ConnectionProfile) -> Result<PathBuf> {
 // ---- SQLite ----------------------------------------------------------
 
 async fn run_sqlite_export(
+    ctx: &ExportContext,
     opts: &ExportOptions,
-    _sink: Arc<dyn ExportProgressSink>,
+    sink: Arc<dyn ExportProgressSink>,
 ) -> Result<PathBuf> {
     match opts.format {
         ExportFormat::SqliteFileCopy => {
@@ -363,7 +369,36 @@ async fn run_sqlite_export(
                 .file_path
                 .as_ref()
                 .ok_or_else(|| ExportError::BadOutputPath("SQLite profile has no file_path".into()))?;
+
+            // Flush any WAL contents into the main database file
+            // BEFORE we copy. Modern SQLite defaults to
+            // journal_mode=WAL, which means the .sqlite file on disk
+            // only holds a snapshot up to the last checkpoint —
+            // everything since lives in the `-wal` sidecar. Without
+            // this step, `fs::copy` on a lively database can produce
+            // a nearly-empty destination (which is what "Wrote 0 B"
+            // was showing).
+            //
+            // We ignore checkpoint errors so a read-only SQLite file
+            // still exports cleanly — worst case the copy just
+            // includes the (already-persisted) main file as-is.
+            let _ = ctx.sqlite_driver.checkpoint_wal(&opts.profile).await;
+
+            // Also copy the -wal and -shm sidecars if they still
+            // exist post-checkpoint. On a healthy checkpoint(TRUNCATE)
+            // the -wal file is shrunk to 0 bytes and the -shm is
+            // fine to leave behind, but shipping them along makes the
+            // dump safe to open even if the checkpoint didn't fully
+            // land.
             std::fs::copy(src, &opts.output_path)?;
+            copy_sidecar(src, &opts.output_path, "-wal");
+            copy_sidecar(src, &opts.output_path, "-shm");
+
+            // Emit the final byte count so the UI shows the real
+            // size instead of "0 B".
+            if let Ok(md) = std::fs::metadata(&opts.output_path) {
+                sink.on_bytes_written(md.len());
+            }
             Ok(opts.output_path.clone())
         }
         ExportFormat::SqlitePlain => {
@@ -386,6 +421,20 @@ async fn run_sqlite_export(
         }
         _ => unreachable!("guarded by ensure_format_matches_engine"),
     }
+}
+
+/// Copy `<src><suffix>` to `<dst><suffix>` if the source exists.
+/// Silent no-op otherwise — sidecars are optional.
+fn copy_sidecar(src: &Path, dst: &Path, suffix: &str) {
+    let mut side_src = src.as_os_str().to_owned();
+    side_src.push(suffix);
+    let side_src = PathBuf::from(side_src);
+    if !side_src.exists() {
+        return;
+    }
+    let mut side_dst = dst.as_os_str().to_owned();
+    side_dst.push(suffix);
+    let _ = std::fs::copy(&side_src, PathBuf::from(side_dst));
 }
 
 // ---- Shared spawn/wait/stderr loop ----------------------------------
