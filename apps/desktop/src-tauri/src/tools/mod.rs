@@ -13,7 +13,7 @@ pub mod cache;
 pub mod download;
 pub mod manifest;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
@@ -30,6 +30,10 @@ pub struct ToolStatus {
     pub bundle_key: String,
     pub display_name: String,
     pub tool_version: String,
+    /// True when every tool in this bundle ships inside the installer
+    /// (Tauri resources). When set, export/import work with no local
+    /// setup and no download, so the frontend shows "Ready".
+    pub bundled: bool,
     /// True when a downloaded bundle exists in the app-data cache.
     pub installed: bool,
     /// True when EVERY tool in `tools` was found on the system PATH.
@@ -62,6 +66,9 @@ pub struct ToolStatus {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InstalledTool {
     pub name: String,
+    /// Path to the installer-bundled executable (Tauri resources), if
+    /// it shipped with the app. Preferred over everything else.
+    pub bundled_path: Option<PathBuf>,
     /// Path to the installed-from-bundle executable, if we downloaded
     /// it into the app-data cache.
     pub path: Option<PathBuf>,
@@ -78,25 +85,30 @@ fn resolve_app_data_dir(app: &AppHandle) -> Result<PathBuf, String> {
         .map_err(|e| format!("resolve app data dir: {e}"))
 }
 
-pub fn list_bundles(app_data_dir: &PathBuf) -> Result<Vec<ToolStatus>, String> {
+pub fn list_bundles(
+    resource_dir: Option<&Path>,
+    app_data_dir: &Path,
+) -> Result<Vec<ToolStatus>, String> {
     let manifest = Manifest::load().map_err(|e| e.to_string())?;
     let mut out = Vec::with_capacity(manifest.bundles.len());
     for (key, bundle) in &manifest.bundles {
         let asset = bundle.asset_for_current_platform();
-        let install_dir_path =
-            cache::bundle_dir(app_data_dir, key, &bundle.tool_version);
+        let install_dir_path = cache::bundle_dir(app_data_dir, key, &bundle.tool_version);
         let installed = cache::is_bundle_installed(app_data_dir, key, &bundle.tool_version);
 
         // Probe every tool independently:
-        //   - `path` = installed-from-bundle location, if any
+        //   - `bundled_path` = installer-shipped location, if any
+        //   - `path` = downloaded-into-cache location, if any
         //   - `system_path` = PATH-resolved location, if any
-        // A bundle is `system_available` when every tool has a
-        // system_path. That gates the whole "no download needed" UX.
+        // A bundle is `bundled`/`system_available` when EVERY tool has
+        // that respective source. Either one gates the "no download
+        // needed" UX.
         let tools: Vec<InstalledTool> = bundle
             .tools
             .iter()
             .map(|t| InstalledTool {
                 name: t.clone(),
+                bundled_path: cache::bundled_tool_executable(resource_dir, key, t),
                 path: if installed {
                     cache::tool_executable(app_data_dir, bundle, key, t)
                 } else {
@@ -106,8 +118,8 @@ pub fn list_bundles(app_data_dir: &PathBuf) -> Result<Vec<ToolStatus>, String> {
             })
             .collect();
 
-        let system_available =
-            !tools.is_empty() && tools.iter().all(|t| t.system_path.is_some());
+        let bundled = !tools.is_empty() && tools.iter().all(|t| t.bundled_path.is_some());
+        let system_available = !tools.is_empty() && tools.iter().all(|t| t.system_path.is_some());
         let download_url = asset.map(|a| a.url.clone());
         let download_available = download_url
             .as_deref()
@@ -124,9 +136,10 @@ pub fn list_bundles(app_data_dir: &PathBuf) -> Result<Vec<ToolStatus>, String> {
             bundle_key: key.clone(),
             display_name: bundle.display_name.clone(),
             tool_version: bundle.tool_version.clone(),
+            bundled,
             installed,
             system_available,
-            ready: installed || system_available,
+            ready: bundled || installed || system_available,
             install_dir: if installed {
                 Some(install_dir_path)
             } else {
@@ -150,7 +163,11 @@ pub fn list_bundles(app_data_dir: &PathBuf) -> Result<Vec<ToolStatus>, String> {
 /// `list_bundles` doesn't cross-module-depend on the dump feature.
 fn which_on_path(name: &str) -> Option<PathBuf> {
     let variants = if cfg!(windows) {
-        vec![format!("{name}.exe"), format!("{name}.cmd"), name.to_string()]
+        vec![
+            format!("{name}.exe"),
+            format!("{name}.cmd"),
+            name.to_string(),
+        ]
     } else {
         vec![name.to_string()]
     };
@@ -205,14 +222,12 @@ fn install_hint_for(bundle_key: &str) -> Option<String> {
 #[tauri::command]
 pub async fn list_tool_bundles(app: AppHandle) -> Result<Vec<ToolStatus>, String> {
     let data_dir = resolve_app_data_dir(&app)?;
-    list_bundles(&data_dir)
+    let resource_dir = app.path().resource_dir().ok();
+    list_bundles(resource_dir.as_deref(), &data_dir)
 }
 
 #[tauri::command]
-pub async fn install_tool_bundle(
-    app: AppHandle,
-    bundle_key: String,
-) -> Result<ToolStatus, String> {
+pub async fn install_tool_bundle(app: AppHandle, bundle_key: String) -> Result<ToolStatus, String> {
     let manifest = Manifest::load().map_err(|e| e.to_string())?;
     let bundle = manifest
         .bundle(&bundle_key)
@@ -240,18 +255,35 @@ pub async fn install_tool_bundle(
         .await
         .map_err(|e| e.to_string())?;
     // Re-read status so the frontend sees the newly-installed marker.
-    let statuses = list_bundles(&data_dir)?;
+    let resource_dir = app.path().resource_dir().ok();
+    let statuses = list_bundles(resource_dir.as_deref(), &data_dir)?;
     statuses
         .into_iter()
         .find(|s| s.bundle_key == bundle_key)
         .ok_or_else(|| "post-install lookup failed".to_string())
 }
 
+/// Return the bundled Open Source Notices (license text + any GPL
+/// written offer) so an About / "Open Source Licenses" screen can
+/// display them. Generated at build time by
+/// `scripts/fetch-desktop-tools.mjs` into `tools/THIRD_PARTY_NOTICES.md`
+/// and shipped via `bundle.resources`. Returns `None` when no tools
+/// were bundled (e.g. a dev build), so the UI can hide the entry.
 #[tauri::command]
-pub async fn uninstall_tool_bundle(
-    app: AppHandle,
-    bundle_key: String,
-) -> Result<(), String> {
+pub async fn third_party_notices(app: AppHandle) -> Result<Option<String>, String> {
+    let Some(resource_dir) = app.path().resource_dir().ok() else {
+        return Ok(None);
+    };
+    let path = resource_dir.join("tools").join("THIRD_PARTY_NOTICES.md");
+    match std::fs::read_to_string(&path) {
+        Ok(text) => Ok(Some(text)),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("read notices: {e}")),
+    }
+}
+
+#[tauri::command]
+pub async fn uninstall_tool_bundle(app: AppHandle, bundle_key: String) -> Result<(), String> {
     let manifest = Manifest::load().map_err(|e| e.to_string())?;
     let bundle = manifest
         .bundle(&bundle_key)

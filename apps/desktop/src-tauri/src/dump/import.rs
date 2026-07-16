@@ -30,6 +30,10 @@ use super::detect::DumpFormat;
 use super::tool_locator;
 
 const STDERR_TAIL_MAX: usize = 8_192;
+/// Poll interval for the child-exit loop in `spawn_and_wait`. Short
+/// enough that job completion feels instant, long enough that the
+/// slot mutex is essentially uncontended for `cancel`.
+const WAIT_POLL_MS: u64 = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ImportOptions {
@@ -101,15 +105,24 @@ pub enum ImportError {
     #[error("secrets: {0}")]
     Secrets(String),
     #[error("child failed: exit code {code:?} — stderr tail: {stderr_tail}")]
-    ChildFailed { code: Option<i32>, stderr_tail: String },
+    ChildFailed {
+        code: Option<i32>,
+        stderr_tail: String,
+    },
     #[error("job cancelled by user")]
     Cancelled,
+    #[error("this connection uses an SSH tunnel — import runs native CLI tools that can't use it yet, and connecting directly could restore into a different server. Import from a machine with direct access to the database")]
+    SshTunnelUnsupported,
 }
 
 pub type Result<T> = std::result::Result<T, ImportError>;
 
 pub struct ImportContext {
     pub app_data_dir: PathBuf,
+    /// App resource directory holding installer-bundled CLI tools.
+    /// `None` when it couldn't be resolved (dev builds) — the locator
+    /// then falls back to the download cache / system PATH.
+    pub resource_dir: Option<PathBuf>,
     pub registry: Arc<ImportRegistry>,
     pub job_id: Uuid,
 }
@@ -130,6 +143,14 @@ pub async fn run_import(
         ));
     }
     ensure_format_matches_engine(opts.format, opts.profile.engine)?;
+
+    // Same guard as export: the native CLIs connect straight to
+    // profile.host with no tunnel, so a tunneled profile could restore
+    // into a DIFFERENT server than the one the app browses. Refuse
+    // loudly. (SQLite is exempt — file-copy import is local.)
+    if opts.profile.ssh_tunnel.is_some() && !matches!(opts.profile.engine, DatabaseEngine::Sqlite) {
+        return Err(ImportError::SshTunnelUnsupported);
+    }
 
     match opts.profile.engine {
         DatabaseEngine::Postgres => run_pg_import(&ctx, &opts, sink).await,
@@ -175,8 +196,13 @@ async fn run_pg_import(
         DumpFormat::PgPlain => ("psql", true),
         _ => unreachable!("guarded by ensure_format_matches_engine"),
     };
-    let loc = tool_locator::locate(&ctx.app_data_dir, "postgres", tool_name)
-        .map_err(|e| ImportError::Locate(e.to_string()))?;
+    let loc = tool_locator::locate(
+        ctx.resource_dir.as_deref(),
+        &ctx.app_data_dir,
+        "postgres",
+        tool_name,
+    )
+    .map_err(|e| ImportError::Locate(e.to_string()))?;
 
     let mut cmd = Command::new(&loc.path);
     cmd.arg(format!("--host={}", opts.profile.host))
@@ -245,7 +271,7 @@ async fn run_pg_import(
         cmd.env_remove(var);
     }
 
-    spawn_and_wait(ctx, cmd, sink, &opts.source_path).await
+    spawn_and_wait(ctx, cmd, sink, &opts.source_path, None).await
 }
 
 // ---- MySQL -----------------------------------------------------------
@@ -255,8 +281,13 @@ async fn run_mysql_import(
     opts: &ImportOptions,
     sink: Arc<dyn ImportProgressSink>,
 ) -> Result<()> {
-    let loc = tool_locator::locate(&ctx.app_data_dir, "mysql", "mysql")
-        .map_err(|e| ImportError::Locate(e.to_string()))?;
+    let loc = tool_locator::locate(
+        ctx.resource_dir.as_deref(),
+        &ctx.app_data_dir,
+        "mysql",
+        "mysql",
+    )
+    .map_err(|e| ImportError::Locate(e.to_string()))?;
 
     let creds_file = if requires_password(&opts.profile.auth) {
         Some(write_mysql_creds(&opts.profile).await?)
@@ -275,20 +306,25 @@ async fn run_mysql_import(
     if !opts.stop_on_error {
         cmd.arg("--force");
     }
-    // Wrap the whole file in a transaction when asked. MySQL DDL
-    // implicitly commits, so a `single_transaction` flag is
-    // best-effort — it covers all DML while it lasts. The
-    // `SET autocommit=0; ... COMMIT;` init runs before the file
-    // contents.
+    // Wrap the DML in a transaction when asked. MySQL DDL implicitly
+    // commits, so this is best-effort — it covers the DML between DDL
+    // statements. The init-command only opens the transaction; the
+    // matching COMMIT is appended AFTER the file contents via the
+    // stdin trailer below. Without it (mysqldump output contains no
+    // COMMIT of its own) everything after the last implicit-commit
+    // DDL was silently rolled back on disconnect.
     if opts.single_transaction {
         cmd.arg("--init-command=SET autocommit=0;");
     }
 
-    // mysql reads from stdin. Redirect the source file into it.
-    let source = std::fs::File::open(&opts.source_path)?;
-    cmd.stdin(Stdio::from(source));
+    // mysql reads the dump from stdin. We stream the file ourselves
+    // rather than redirecting the fd so a trailer can be appended.
+    let feed = StdinFeed {
+        path: opts.source_path.clone(),
+        trailer: opts.single_transaction.then_some(b"\nCOMMIT;\n".as_slice()),
+    };
 
-    let result = spawn_and_wait(ctx, cmd, sink, &opts.source_path).await;
+    let result = spawn_and_wait(ctx, cmd, sink, &opts.source_path, Some(feed)).await;
     if let Some(path) = creds_file {
         let _ = std::fs::remove_file(path);
     }
@@ -328,10 +364,7 @@ async fn write_mysql_creds(profile: &ConnectionProfile) -> Result<PathBuf> {
 
 // ---- SQLite ----------------------------------------------------------
 
-async fn run_sqlite_import(
-    opts: &ImportOptions,
-    sink: Arc<dyn ImportProgressSink>,
-) -> Result<()> {
+async fn run_sqlite_import(opts: &ImportOptions, sink: Arc<dyn ImportProgressSink>) -> Result<()> {
     let target = opts
         .profile
         .file_path
@@ -347,6 +380,19 @@ async fn run_sqlite_import(
             // — the Import page uses `api.reconnect` after we return
             // to re-open on the new file.
             std::fs::copy(&opts.source_path, target)?;
+
+            // The target's OLD -wal/-shm sidecars belong to the file
+            // we just replaced. Left in place, SQLite would replay the
+            // stale WAL's frames onto the new database on next open —
+            // corrupting it or resurrecting overwritten data. Remove
+            // them, then bring over the source's sidecars if the
+            // snapshot shipped with any (the exporter copies them
+            // alongside the main file).
+            for suffix in ["-wal", "-shm"] {
+                remove_sidecar(target, suffix)?;
+                copy_sidecar(&opts.source_path, target, suffix);
+            }
+
             if let Ok(md) = std::fs::metadata(target) {
                 sink.on_bytes_read(md.len());
             }
@@ -359,18 +405,78 @@ async fn run_sqlite_import(
     }
 }
 
+/// Delete `<base><suffix>` if it exists. Errors matter here — failing
+/// to remove a stale WAL means the freshly imported database gets
+/// corrupted on next open, so this is not a best-effort cleanup.
+fn remove_sidecar(base: &Path, suffix: &str) -> Result<()> {
+    let mut path = base.as_os_str().to_owned();
+    path.push(suffix);
+    let path = PathBuf::from(path);
+    if path.exists() {
+        std::fs::remove_file(&path)?;
+    }
+    Ok(())
+}
+
+/// Copy `<src><suffix>` to `<dst><suffix>` if the source exists.
+/// Silent no-op otherwise — sidecars are optional.
+fn copy_sidecar(src: &Path, dst: &Path, suffix: &str) {
+    let mut side_src = src.as_os_str().to_owned();
+    side_src.push(suffix);
+    let side_src = PathBuf::from(side_src);
+    if !side_src.exists() {
+        return;
+    }
+    let mut side_dst = dst.as_os_str().to_owned();
+    side_dst.push(suffix);
+    let _ = std::fs::copy(&side_src, PathBuf::from(side_dst));
+}
+
 // ---- Shared spawn/wait/stderr ----------------------------------------
+
+/// Stream a file into the child's stdin, optionally followed by a
+/// trailer. Lets the MySQL import append `COMMIT;` after the dump —
+/// impossible with a plain fd redirect.
+struct StdinFeed {
+    path: PathBuf,
+    trailer: Option<&'static [u8]>,
+}
 
 async fn spawn_and_wait(
     ctx: &ImportContext,
     mut cmd: Command,
     sink: Arc<dyn ImportProgressSink>,
     source_path: &Path,
+    stdin_feed: Option<StdinFeed>,
 ) -> Result<()> {
     cmd.stderr(Stdio::piped());
+    if stdin_feed.is_some() {
+        cmd.stdin(Stdio::piped());
+    }
 
     let mut child = cmd.spawn()?;
     let stderr = child.stderr.take();
+    // Pump the source file into stdin in the background. If the child
+    // dies early the copy fails with a broken pipe and the task just
+    // ends — the exit-status path below reports the real error.
+    let stdin_task = stdin_feed.and_then(|feed| {
+        child.stdin.take().map(|mut stdin| {
+            tokio::spawn(async move {
+                use tokio::io::AsyncWriteExt;
+                let Ok(mut file) = tokio::fs::File::open(&feed.path).await else {
+                    return;
+                };
+                if tokio::io::copy(&mut file, &mut stdin).await.is_err() {
+                    return;
+                }
+                if let Some(trailer) = feed.trailer {
+                    let _ = stdin.write_all(trailer).await;
+                }
+                // Close stdin so the child sees EOF and finishes.
+                let _ = stdin.shutdown().await;
+            })
+        })
+    });
     let slot = Arc::new(Mutex::new(Some(child)));
     ctx.registry.jobs.insert(ctx.job_id, slot.clone());
 
@@ -407,13 +513,43 @@ async fn spawn_and_wait(
         }
     });
 
-    let status = {
-        let mut guard = slot.lock().await;
-        let child = guard.as_mut().ok_or(ImportError::Cancelled)?;
-        child.wait().await?
+    // Wait for exit WITHOUT holding the slot lock across an await —
+    // `cancel` needs this same lock to reach the child and kill it, so
+    // holding it for the whole run made every job uncancellable. Poll
+    // `try_wait` instead; the lock is held only for the microseconds
+    // each poll takes.
+    let wait_result: Result<std::process::ExitStatus> = loop {
+        {
+            let mut guard = slot.lock().await;
+            match guard.as_mut() {
+                // Cancel emptied the slot and killed the child.
+                None => break Err(ImportError::Cancelled),
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) => {}
+                    Err(e) => break Err(e.into()),
+                },
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(WAIT_POLL_MS)).await;
     };
+
+    // Drop registry entry so a stale cancel is a no-op, and stop the
+    // helper tasks on every exit path (they leaked on error before).
     ctx.registry.jobs.remove(&ctx.job_id);
     size_task.abort();
+    // The stdin pump has either finished (child read to EOF) or is
+    // stuck on a dead pipe — abort is a no-op in the former case.
+    if let Some(task) = stdin_task {
+        task.abort();
+    }
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(e) => {
+            stderr_task.abort();
+            return Err(e);
+        }
+    };
     let tail = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
@@ -431,6 +567,9 @@ pub async fn cancel(reg: &ImportRegistry, job_id: Uuid) -> bool {
         let mut guard = slot.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.start_kill();
+            // Reap the killed process so it doesn't linger as a
+            // zombie; SIGKILL makes this return promptly.
+            let _ = child.wait().await;
             return true;
         }
     }

@@ -25,6 +25,39 @@ pub struct Bundle {
     pub tools: Vec<String>,
     pub covers_engines: Vec<String>,
     pub platforms: HashMap<String, PlatformAsset>,
+    /// License metadata — the source of truth for the bundled
+    /// third-party notices. Required for anything we ship inside the
+    /// installer so we can honour attribution / copyleft obligations.
+    #[serde(default)]
+    pub license: License,
+}
+
+/// Per-bundle license info used to generate the app's Open Source
+/// Notices. For permissive tools only `spdx`, `url`, and `copyright`
+/// matter. For copyleft tools (`copyleft: true`, e.g. GPLv2 mysqldump)
+/// `source_url` MUST point at the *exact* corresponding source so the
+/// generated written offer is valid.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct License {
+    /// SPDX identifier, e.g. "GPL-2.0-only", "Apache-2.0",
+    /// "PostgreSQL", "BSD-3-Clause", "blessing" (SQLite public domain).
+    #[serde(default)]
+    pub spdx: String,
+    /// Canonical URL of the license text.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Copyright line to reproduce in the notices.
+    #[serde(default)]
+    pub copyright: Option<String>,
+    /// True for reciprocal/copyleft licenses that carry a
+    /// source-availability obligation when we redistribute the binary.
+    #[serde(default)]
+    pub copyleft: bool,
+    /// URL of the complete corresponding source for the exact version
+    /// bundled. Populates the GPLv2 §3 written offer. Required when
+    /// `copyleft` is true.
+    #[serde(default)]
+    pub source_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

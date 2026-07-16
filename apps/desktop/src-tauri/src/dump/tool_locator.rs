@@ -1,15 +1,17 @@
 // Where do we find pg_dump / mysqldump / mongodump on this machine?
 //
 // Lookup order:
-//   1. If the corresponding tool bundle is installed under
-//      `tools/<bundle>/<version>/bin/<tool>` — use that. This is the
-//      normal path once the user has clicked "Download & Install"
-//      on the Export page.
-//   2. Fall back to the system PATH. Users who already have Postgres
+//   1. If the tool ships *inside the installer* (Tauri resources under
+//      `<resource_dir>/tools/<bundle>/bin/<tool>`) — use that. This is
+//      the default path: the binaries are bundled with the app so
+//      export/import work with zero local setup and zero network.
+//   2. If a bundle was downloaded on demand into the app-data cache
+//      (`tools/<bundle>/<version>/bin/<tool>`) — use that. Fallback for
+//      platforms/tools not shipped in the installer.
+//   3. Fall back to the system PATH. Users who already have Postgres
 //      installed (Postgres.app on macOS, `apt install
-//      postgresql-client`) can skip the bundle download entirely.
-//   3. Return `NotFound` — the UI shows the "Download & Install"
-//      prompt.
+//      postgresql-client`) can still use their own copy.
+//   4. Return `NotFound` — the UI shows the install prompt.
 
 use std::path::{Path, PathBuf};
 
@@ -31,7 +33,9 @@ pub struct ToolLocation {
 #[derive(Debug, Clone, Copy, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolSource {
-    /// From an installed tool bundle under the app data dir.
+    /// Shipped inside the installer (Tauri resources). The default.
+    Bundled,
+    /// From a bundle downloaded on demand into the app data dir.
     Bundle,
     /// From the system PATH.
     System,
@@ -50,7 +54,12 @@ pub enum LocateError {
 /// Find a tool binary. `bundle_key` scopes the search to the correct
 /// bundle when hitting the installed cache; the same tool name never
 /// appears in more than one bundle in the manifest, so this is safe.
+///
+/// `resource_dir` is the app's Tauri resource directory, where the
+/// installer-shipped tools live. Pass `None` when it can't be resolved
+/// (the lookup then skips straight to the download cache / PATH).
 pub fn locate(
+    resource_dir: Option<&Path>,
     app_data_dir: &Path,
     bundle_key: &str,
     tool_name: &str,
@@ -59,6 +68,15 @@ pub fn locate(
     let bundle = manifest
         .bundle(bundle_key)
         .ok_or_else(|| LocateError::UnknownBundle(bundle_key.to_string()))?;
+
+    if let Some(path) = cache::bundled_tool_executable(resource_dir, bundle_key, tool_name) {
+        return Ok(ToolLocation {
+            tool_name: tool_name.into(),
+            path,
+            source: ToolSource::Bundled,
+            version_hint: Some(bundle.tool_version.clone()),
+        });
+    }
 
     if let Some(path) = cache::tool_executable(app_data_dir, bundle, bundle_key, tool_name) {
         return Ok(ToolLocation {

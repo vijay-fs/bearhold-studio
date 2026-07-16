@@ -187,11 +187,7 @@ async fn download_streamed(
     Ok(buf)
 }
 
-fn extract_archive(
-    bytes: &[u8],
-    asset: &PlatformAsset,
-    dest: &Path,
-) -> Result<()> {
+fn extract_archive(bytes: &[u8], asset: &PlatformAsset, dest: &Path) -> Result<()> {
     match asset.archive {
         ArchiveKind::TarGz => extract_tar_gz(bytes, dest, asset.strip_components),
         ArchiveKind::Zip => extract_zip(bytes, dest, asset.strip_components),

@@ -15,8 +15,8 @@ use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
     AuthMethod, BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate,
-    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult,
-    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
+    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, Result,
+    ResultColumn, RowDelete, RowInsert, Schema, SshAuth, TlsMode, Value,
 };
 use sqlx::{
     mysql::{MySql, MySqlPool, MySqlPoolOptions},
@@ -121,12 +121,14 @@ async fn resolve_bastion_auth(profile_id: Uuid, auth: &SshAuth) -> Result<Bastio
             } else {
                 Some(password_ref.clone())
             };
-            let pw = pw.ok_or_else(|| {
-                DbError::AuthFailed("ssh tunnel password not in keychain".into())
-            })?;
+            let pw = pw
+                .ok_or_else(|| DbError::AuthFailed("ssh tunnel password not in keychain".into()))?;
             Ok(BastionAuth::Password(pw))
         }
-        SshAuth::Key { key_ref, passphrase_ref } => {
+        SshAuth::Key {
+            key_ref,
+            passphrase_ref,
+        } => {
             let passphrase = match passphrase_ref {
                 Some(p) if !p.is_empty() => Some(p.clone()),
                 _ => secrets::get(profile_id, Slot::SshTunnelPassphrase).await?,
@@ -151,7 +153,10 @@ async fn build_connection_url(
     port: u16,
 ) -> Result<String> {
     let (username, password) = match &profile.auth {
-        AuthMethod::Password { username, password_ref } => {
+        AuthMethod::Password {
+            username,
+            password_ref,
+        } => {
             let pw = if password_ref.is_empty() {
                 secrets::get(profile.id, Slot::Password).await?
             } else {
@@ -167,8 +172,8 @@ async fn build_connection_url(
         }
     };
 
-    let mut url = url::Url::parse("mysql://placeholder/")
-        .map_err(|e| DbError::Internal(e.to_string()))?;
+    let mut url =
+        url::Url::parse("mysql://placeholder/").map_err(|e| DbError::Internal(e.to_string()))?;
     url.set_host(Some(host))
         .map_err(|e| DbError::Internal(format!("invalid host: {e:?}")))?;
     url.set_port(Some(port))
@@ -184,6 +189,19 @@ async fn build_connection_url(
                 .map_err(|_| DbError::Internal("invalid password".to_string()))?;
         }
     }
+    // Honor the profile's TLS mode. Without an explicit ssl-mode sqlx
+    // defaults to PREFERRED, which does no certificate verification
+    // and silently falls back to plaintext — so a profile configured
+    // as `verify_full` got neither verification nor a guaranteed
+    // encrypted channel.
+    let ssl_mode = match profile.tls {
+        TlsMode::Disable => "DISABLED",
+        TlsMode::Prefer => "PREFERRED",
+        TlsMode::Require => "REQUIRED",
+        TlsMode::VerifyCa => "VERIFY_CA",
+        TlsMode::VerifyFull => "VERIFY_IDENTITY",
+    };
+    url.query_pairs_mut().append_pair("ssl-mode", ssl_mode);
     Ok(url.into())
 }
 
@@ -259,7 +277,9 @@ fn leading_keyword(sql: &str) -> String {
     while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
         i += 1;
     }
-    std::str::from_utf8(&bytes[start..i]).unwrap_or("").to_string()
+    std::str::from_utf8(&bytes[start..i])
+        .unwrap_or("")
+        .to_string()
 }
 
 #[async_trait]
@@ -308,11 +328,7 @@ impl Driver for MySqlDriver {
         })
     }
 
-    async fn execute(
-        &self,
-        profile: &ConnectionProfile,
-        req: QueryRequest,
-    ) -> Result<QueryResult> {
+    async fn execute(&self, profile: &ConnectionProfile, req: QueryRequest) -> Result<QueryResult> {
         let pool = self.pool_for(profile).await?;
         let started = std::time::Instant::now();
         let limit = req.limit.unwrap_or(DEFAULT_ROW_LIMIT) as usize;
@@ -326,9 +342,7 @@ impl Driver for MySqlDriver {
 
         let mut last: Option<QueryResult> = None;
         for stmt in &statements {
-            last = Some(
-                run_single(&pool, stmt, limit, req.query_id, &self.query_conn_ids).await?,
-            );
+            last = Some(run_single(&pool, stmt, limit, req.query_id, &self.query_conn_ids).await?);
         }
 
         let mut out = last.expect("at least one statement");
@@ -357,11 +371,7 @@ impl Driver for MySqlDriver {
         introspect::load_schema(&pool, &profile.database).await
     }
 
-    async fn update_cell(
-        &self,
-        profile: &ConnectionProfile,
-        update: CellUpdate,
-    ) -> Result<u64> {
+    async fn update_cell(&self, profile: &ConnectionProfile, update: CellUpdate) -> Result<u64> {
         if update.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "update_cell requires at least one pk column".into(),
@@ -396,11 +406,7 @@ impl Driver for MySqlDriver {
         Ok(result.rows_affected())
     }
 
-    async fn insert_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowInsert,
-    ) -> Result<u64> {
+    async fn insert_row(&self, profile: &ConnectionProfile, req: RowInsert) -> Result<u64> {
         if req.values.is_empty() {
             return Err(DbError::InvalidInput(
                 "insert_row requires at least one column value".into(),
@@ -435,11 +441,7 @@ impl Driver for MySqlDriver {
         Ok(result.rows_affected())
     }
 
-    async fn delete_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowDelete,
-    ) -> Result<u64> {
+    async fn delete_row(&self, profile: &ConnectionProfile, req: RowDelete) -> Result<u64> {
         if req.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "delete_row requires at least one pk column".into(),
@@ -545,8 +547,7 @@ impl Driver for MySqlDriver {
         // log so users know precisely what happened.
         let pool = self.pool_for(profile).await?;
         let contains_ddl = statements.iter().any(|s| is_ddl_statement(s));
-        let mut results: Vec<BatchStatementResult> =
-            Vec::with_capacity(statements.len());
+        let mut results: Vec<BatchStatementResult> = Vec::with_capacity(statements.len());
         let mut failed_at: Option<usize> = None;
 
         if !contains_ddl {
@@ -583,10 +584,7 @@ impl Driver for MySqlDriver {
                 Ok(BatchResult {
                     committed: false,
                     statements: results,
-                    summary: format!(
-                        "rolled back: statement #{} failed",
-                        failed_at.unwrap() + 1
-                    ),
+                    summary: format!("rolled back: statement #{} failed", failed_at.unwrap() + 1),
                 })
             } else {
                 tx.commit().await.map_err(map_sqlx_error)?;

@@ -51,7 +51,9 @@ pub fn decode_cell(row: &MySqlRow, idx: usize, type_name: &str) -> Value {
 
         // ---- strings ---------------------------------------------------
         "VARCHAR" | "CHAR" | "TEXT" | "TINYTEXT" | "MEDIUMTEXT" | "LONGTEXT" | "ENUM" | "SET" => {
-            opt::<String>(row, idx).map(Value::String).unwrap_or(Value::Null)
+            opt::<String>(row, idx)
+                .map(Value::String)
+                .unwrap_or(Value::Null)
         }
 
         // ---- temporal --------------------------------------------------

@@ -225,24 +225,31 @@ function ExportRunner({ source }: { source: ConnectionProfile }) {
     setBytesWritten(0);
     bytesWrittenRef.current = 0;
     const startedAt = Date.now();
-    setRun({ kind: 'running', jobId: 'pending', startedAt });
+    // Generate the job id HERE — start_export only resolves after the
+    // job finishes, so a backend-generated id could never be used to
+    // match progress events or cancel while the job runs.
+    const jobId = crypto.randomUUID();
+    setRun({ kind: 'running', jobId, startedAt });
     try {
       const tables = tablesRaw
         .split(/[\s,]+/)
         .map((t) => t.trim())
         .filter(Boolean);
-      const result = await api.startExport({
-        profile: source,
-        output_path: outputPath,
-        format,
-        include_schema: includeSchema,
-        include_data: includeData,
-        tables,
-        drop_before_create: dropBeforeCreate,
-        no_owner: noOwner,
-        single_transaction: singleTx,
-        parallel_jobs: null,
-      });
+      const result = await api.startExport(
+        {
+          profile: source,
+          output_path: outputPath,
+          format,
+          include_schema: includeSchema,
+          include_data: includeData,
+          tables,
+          drop_before_create: dropBeforeCreate,
+          no_owner: noOwner,
+          single_transaction: singleTx,
+          parallel_jobs: null,
+        },
+        jobId,
+      );
       // Read the latest byte count from the ref (state closure is
       // stale). Also fall back to a live stat of the output file so
       // even engines that don't emit the final progress event show
@@ -266,8 +273,12 @@ function ExportRunner({ source }: { source: ConnectionProfile }) {
 
   const cancel = async () => {
     if (run.kind !== 'running') return;
+    // Don't set a terminal state here — the backend kills the child
+    // and the awaited startExport rejects with "job cancelled by
+    // user", which lands in start()'s catch. Setting "Cancelled"
+    // eagerly used to get overwritten by the success banner when the
+    // (un-killed) job later finished.
     await api.cancelExport(run.jobId).catch(() => false);
-    setRun({ kind: 'error', message: 'Cancelled by user.' });
   };
 
   return (

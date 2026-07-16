@@ -12,9 +12,7 @@ pub fn run() {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| {
-                    "info,dbstudio=debug,dbstudio_core=debug,russh=info".into()
-                }),
+                .unwrap_or_else(|_| "info,dbstudio=debug,dbstudio_core=debug,russh=info".into()),
         )
         .init();
 
@@ -85,6 +83,7 @@ pub fn run() {
             tools::list_tool_bundles,
             tools::install_tool_bundle,
             tools::uninstall_tool_bundle,
+            tools::third_party_notices,
             dump::detect_dump_format,
             dump::file_size,
             dump::start_export,

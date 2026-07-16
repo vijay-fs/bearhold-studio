@@ -85,6 +85,10 @@ function SqlPageInner() {
   const profile = useConnections((s) => s.profiles.find((p) => p.id === id));
   const router = useRouter();
   const editorRef = useRef<SqlEditorHandle>(null);
+  // Last palette-load nonce we acted on. Survives effect re-runs, so a
+  // given SQL-load fires exactly once even though both the mount-drain
+  // and the event deliver it.
+  const handledLoadNonceRef = useRef<string | null>(null);
   const recordHistory = useQueryHistory((s) => s.record);
   const loadSchema = useSchemaCache((s) => s.load);
   // Schema must be DERIVED from the cache selector — not copied into local
@@ -168,19 +172,39 @@ function SqlPageInner() {
       setBottomTab('results');
       if (shouldRun) setTimeout(() => void onRun(sql), 0);
     };
+    // Dedupe by nonce: both the sessionStorage drain and the event
+    // carry the same nonce, so whichever runs first wins and the other
+    // is skipped. A missing nonce (legacy/no-nonce dispatch) falls back
+    // to running once — the sessionStorage keys are cleared on drain so
+    // it can't replay.
+    const openOnce = (
+      nonce: string | null | undefined,
+      sql: string,
+      autoRun: boolean,
+      tableRef?: { schema: string; table: string },
+    ) => {
+      if (nonce) {
+        if (handledLoadNonceRef.current === nonce) return;
+        handledLoadNonceRef.current = nonce;
+      }
+      open(sql, autoRun, tableRef);
+    };
     const onPaletteLoad = (e: Event) => {
       const detail = (
         e as CustomEvent<{
           sql: string;
           autoRun?: boolean;
           tableRef?: { schema: string; table: string };
+          nonce?: string;
         }>
       ).detail;
-      if (detail?.sql) open(detail.sql, Boolean(detail.autoRun), detail.tableRef);
+      if (detail?.sql)
+        openOnce(detail.nonce, detail.sql, Boolean(detail.autoRun), detail.tableRef);
     };
     window.addEventListener('palette-load-sql', onPaletteLoad as EventListener);
     const pending = sessionStorage.getItem('dbstudio.pendingSql');
     if (pending) {
+      const nonce = sessionStorage.getItem('dbstudio.pendingSqlNonce');
       const autoRun = sessionStorage.getItem('dbstudio.pendingSqlAutoRun') === '1';
       const refRaw = sessionStorage.getItem('dbstudio.pendingSqlTableRef');
       let ref: { schema: string; table: string } | undefined;
@@ -192,10 +216,11 @@ function SqlPageInner() {
         }
       }
       sessionStorage.removeItem('dbstudio.pendingSql');
+      sessionStorage.removeItem('dbstudio.pendingSqlNonce');
       sessionStorage.removeItem('dbstudio.pendingSqlEntry');
       sessionStorage.removeItem('dbstudio.pendingSqlAutoRun');
       sessionStorage.removeItem('dbstudio.pendingSqlTableRef');
-      open(pending, autoRun, ref);
+      openOnce(nonce, pending, autoRun, ref);
     }
     return () =>
       window.removeEventListener('palette-load-sql', onPaletteLoad as EventListener);

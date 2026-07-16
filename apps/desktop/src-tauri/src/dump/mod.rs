@@ -17,12 +17,8 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 use self::detect::{probe, DumpProbe};
-use self::export::{
-    run_export, ExportContext, ExportOptions, ExportProgressSink, ExportRegistry,
-};
-use self::import::{
-    run_import, ImportContext, ImportOptions, ImportProgressSink, ImportRegistry,
-};
+use self::export::{run_export, ExportContext, ExportOptions, ExportProgressSink, ExportRegistry};
+use self::import::{run_import, ImportContext, ImportOptions, ImportProgressSink, ImportRegistry};
 
 const EXPORT_PROGRESS_EVENT: &str = "dbstudio://export/progress";
 const IMPORT_PROGRESS_EVENT: &str = "dbstudio://import/progress";
@@ -104,14 +100,21 @@ pub async fn start_export(
     registry: State<'_, Arc<ExportRegistry>>,
     state: State<'_, crate::state::AppState>,
     options: ExportOptions,
+    job_id: Uuid,
 ) -> Result<ExportResult, String> {
-    let job_id = Uuid::new_v4();
+    // The job id is CALLER-supplied: this command only resolves after
+    // the job finishes, so a server-generated id could never reach the
+    // frontend in time to correlate progress events or cancel the job.
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("app data dir: {e}"))?;
+    // Installer-bundled tools live here. Absent in some dev builds —
+    // `Option` lets the locator fall back gracefully.
+    let resource_dir = app.path().resource_dir().ok();
     let ctx = ExportContext {
         app_data_dir: data_dir,
+        resource_dir,
         registry: registry.inner().clone(),
         job_id,
         // Handing the SQLite driver Arc through means the WAL
@@ -127,7 +130,10 @@ pub async fn start_export(
     let output_path = run_export(ctx, options, sink)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(ExportResult { job_id, output_path })
+    Ok(ExportResult {
+        job_id,
+        output_path,
+    })
 }
 
 #[tauri::command]
@@ -192,14 +198,19 @@ pub async fn start_import(
     app: AppHandle,
     registry: State<'_, Arc<ImportRegistry>>,
     options: ImportOptions,
+    job_id: Uuid,
 ) -> Result<ImportResult, String> {
-    let job_id = Uuid::new_v4();
+    // Caller-supplied for the same reason as `start_export`: the
+    // command resolves only after completion, so the frontend needs
+    // the id up front for progress correlation and cancel.
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|e| format!("app data dir: {e}"))?;
+    let resource_dir = app.path().resource_dir().ok();
     let ctx = ImportContext {
         app_data_dir: data_dir,
+        resource_dir,
         registry: registry.inner().clone(),
         job_id,
     };

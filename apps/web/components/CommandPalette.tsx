@@ -136,13 +136,18 @@ export function CommandPalette() {
 
   const loadRecentQuery = (id: string, sql: string) => {
     if (!activeConnectionId) return;
-    // The SQL page picks this up on mount via the `palette-load-sql` event.
+    // Both transports carry the SAME nonce so the SQL page opens the
+    // query exactly once — see loadSqlInWorkspace for the rationale.
+    const nonce = crypto.randomUUID();
+    sessionStorage.setItem('dbstudio.pendingSqlNonce', nonce);
     sessionStorage.setItem('dbstudio.pendingSql', sql);
     sessionStorage.setItem('dbstudio.pendingSqlEntry', id);
     router.push(`/sql?cid=${activeConnectionId}` as Route);
     // Fire the event after the navigation tick so the SQL page is mounted.
     setTimeout(() => {
-      window.dispatchEvent(new CustomEvent('palette-load-sql', { detail: { sql } }));
+      window.dispatchEvent(
+        new CustomEvent('palette-load-sql', { detail: { sql, nonce } }),
+      );
     }, 50);
     close();
   };

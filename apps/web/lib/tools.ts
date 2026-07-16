@@ -11,8 +11,12 @@ import type { ConnectionProfile } from './types';
 
 export interface InstalledTool {
   name: string;
-  /** Absolute path to the bundled executable (app-data cache). null
-   *  when the bundle isn't installed. */
+  /** Absolute path to the installer-bundled executable (Tauri
+   *  resources). null when it didn't ship with the app. Preferred
+   *  over everything else. */
+  bundled_path: string | null;
+  /** Absolute path to the downloaded-into-cache executable. null when
+   *  the on-demand bundle isn't installed. */
   path: string | null;
   /** Absolute path to a PATH-resolved system executable, if any.
    *  Independent of `path` — a user with Homebrew's pg_dump linked
@@ -24,13 +28,17 @@ export interface ToolBundleStatus {
   bundle_key: string;
   display_name: string;
   tool_version: string;
+  /** True when every tool in this bundle ships inside the installer
+   *  (Tauri resources). When set, no download or local setup is
+   *  needed. */
+  bundled: boolean;
   /** True when a downloaded bundle exists in the app-data cache. */
   installed: boolean;
   /** True when EVERY tool in `tools` was found on the system PATH. */
   system_available: boolean;
-  /** `installed || system_available`. Use this to gate the
-   *  workflow — don't require a download when the OS already has
-   *  the tools. */
+  /** `bundled || installed || system_available`. Use this to gate the
+   *  workflow — don't require a download when the tools already ship
+   *  with the app or the OS already has them. */
   ready: boolean;
   install_dir: string | null;
   tools: InstalledTool[];

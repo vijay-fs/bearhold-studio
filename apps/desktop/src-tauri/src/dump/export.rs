@@ -35,6 +35,10 @@ use uuid::Uuid;
 use super::tool_locator;
 
 const STDERR_TAIL_MAX: usize = 8_192;
+/// Poll interval for the child-exit loop in `spawn_and_wait`. Short
+/// enough that job completion feels instant, long enough that the
+/// slot mutex is essentially uncontended for `cancel`.
+const WAIT_POLL_MS: u64 = 100;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExportOptions {
@@ -122,17 +126,26 @@ pub enum ExportError {
     #[error("secrets: {0}")]
     Secrets(String),
     #[error("child failed: exit code {code:?} — stderr tail: {stderr_tail}")]
-    ChildFailed { code: Option<i32>, stderr_tail: String },
+    ChildFailed {
+        code: Option<i32>,
+        stderr_tail: String,
+    },
     #[error("job cancelled by user")]
     Cancelled,
     #[error("locate tool: {0}")]
     Locate(String),
+    #[error("this connection uses an SSH tunnel — export runs native CLI tools that can't use it yet, and connecting directly could dump a different server. Export from a machine with direct access to the database")]
+    SshTunnelUnsupported,
 }
 
 pub type Result<T> = std::result::Result<T, ExportError>;
 
 pub struct ExportContext {
     pub app_data_dir: PathBuf,
+    /// App resource directory holding installer-bundled CLI tools.
+    /// `None` when it couldn't be resolved (dev builds) — the locator
+    /// then falls back to the download cache / system PATH.
+    pub resource_dir: Option<PathBuf>,
     pub registry: Arc<ExportRegistry>,
     pub job_id: Uuid,
     /// SQLite driver handle — reuses the app-wide connection pool so
@@ -162,10 +175,18 @@ pub async fn run_export(
     // message.
     ensure_format_matches_engine(opts.format, opts.profile.engine)?;
 
+    // The native CLIs connect straight to profile.host — the SSH
+    // tunnel the in-app drivers establish is NOT available here.
+    // Silently ignoring it is dangerous: a tunneled profile whose DB
+    // host is "localhost" would dump whatever Postgres/MySQL happens
+    // to run on the USER's machine, with exit code 0. Refuse loudly.
+    // (SQLite is exempt — its exports operate on a local file path.)
+    if opts.profile.ssh_tunnel.is_some() && !matches!(opts.profile.engine, DatabaseEngine::Sqlite) {
+        return Err(ExportError::SshTunnelUnsupported);
+    }
+
     let result = match opts.profile.engine {
-        DatabaseEngine::Postgres => {
-            run_pg_dump(&ctx, &opts, sink.clone()).await
-        }
+        DatabaseEngine::Postgres => run_pg_dump(&ctx, &opts, sink.clone()).await,
         DatabaseEngine::MySql => run_mysqldump(&ctx, &opts, sink.clone()).await,
         DatabaseEngine::Sqlite => run_sqlite_export(&ctx, &opts, sink.clone()).await,
         e => Err(ExportError::UnsupportedEngine { engine: e }),
@@ -182,14 +203,22 @@ pub async fn run_export(
 fn ensure_format_matches_engine(f: ExportFormat, e: DatabaseEngine) -> Result<()> {
     let ok = matches!(
         (f, e),
-        (ExportFormat::PgCustom | ExportFormat::PgPlain | ExportFormat::PgTar, DatabaseEngine::Postgres)
-            | (ExportFormat::MysqlPlain, DatabaseEngine::MySql)
-            | (ExportFormat::SqlitePlain | ExportFormat::SqliteFileCopy, DatabaseEngine::Sqlite)
+        (
+            ExportFormat::PgCustom | ExportFormat::PgPlain | ExportFormat::PgTar,
+            DatabaseEngine::Postgres
+        ) | (ExportFormat::MysqlPlain, DatabaseEngine::MySql)
+            | (
+                ExportFormat::SqlitePlain | ExportFormat::SqliteFileCopy,
+                DatabaseEngine::Sqlite
+            )
     );
     if ok {
         Ok(())
     } else {
-        Err(ExportError::FormatEngineMismatch { format: f, engine: e })
+        Err(ExportError::FormatEngineMismatch {
+            format: f,
+            engine: e,
+        })
     }
 }
 
@@ -215,8 +244,13 @@ async fn run_pg_dump(
     opts: &ExportOptions,
     sink: Arc<dyn ExportProgressSink>,
 ) -> Result<PathBuf> {
-    let loc = tool_locator::locate(&ctx.app_data_dir, "postgres", "pg_dump")
-        .map_err(|e| ExportError::Locate(e.to_string()))?;
+    let loc = tool_locator::locate(
+        ctx.resource_dir.as_deref(),
+        &ctx.app_data_dir,
+        "postgres",
+        "pg_dump",
+    )
+    .map_err(|e| ExportError::Locate(e.to_string()))?;
 
     let mut cmd = Command::new(&loc.path);
     cmd.arg(format!("--host={}", opts.profile.host))
@@ -291,8 +325,13 @@ async fn run_mysqldump(
     opts: &ExportOptions,
     sink: Arc<dyn ExportProgressSink>,
 ) -> Result<PathBuf> {
-    let loc = tool_locator::locate(&ctx.app_data_dir, "mysql", "mysqldump")
-        .map_err(|e| ExportError::Locate(e.to_string()))?;
+    let loc = tool_locator::locate(
+        ctx.resource_dir.as_deref(),
+        &ctx.app_data_dir,
+        "mysql",
+        "mysqldump",
+    )
+    .map_err(|e| ExportError::Locate(e.to_string()))?;
 
     // Password + user go into a temp `--defaults-extra-file`. mysqldump
     // reads this once at startup, then we delete the file. Never on the
@@ -388,11 +427,9 @@ async fn run_sqlite_export(
 ) -> Result<PathBuf> {
     match opts.format {
         ExportFormat::SqliteFileCopy => {
-            let src = opts
-                .profile
-                .file_path
-                .as_ref()
-                .ok_or_else(|| ExportError::BadOutputPath("SQLite profile has no file_path".into()))?;
+            let src = opts.profile.file_path.as_ref().ok_or_else(|| {
+                ExportError::BadOutputPath("SQLite profile has no file_path".into())
+            })?;
 
             // Flush any WAL contents into the main database file
             // BEFORE we copy. Modern SQLite defaults to
@@ -429,11 +466,9 @@ async fn run_sqlite_export(
             // sqlite3 <db> .dump — separate binary; wire through
             // tool_locator so the user can install the bundle if
             // needed.
-            let src = opts
-                .profile
-                .file_path
-                .as_ref()
-                .ok_or_else(|| ExportError::BadOutputPath("SQLite profile has no file_path".into()))?;
+            let src = opts.profile.file_path.as_ref().ok_or_else(|| {
+                ExportError::BadOutputPath("SQLite profile has no file_path".into())
+            })?;
             // Skip the locator complexity for now; sqlite3 is almost
             // always present on macOS/Linux and can be installed via
             // the bundle later. This branch is a stub — implemented
@@ -520,17 +555,38 @@ async fn spawn_and_wait(
         }
     });
 
-    // Wait for exit.
-    let status = {
-        let mut guard = slot.lock().await;
-        let child = guard
-            .as_mut()
-            .ok_or_else(|| ExportError::Cancelled)?;
-        child.wait().await?
+    // Wait for exit WITHOUT holding the slot lock across an await —
+    // `cancel` needs this same lock to reach the child and kill it, so
+    // holding it for the whole run made every job uncancellable. Poll
+    // `try_wait` instead; the lock is held only for the microseconds
+    // each poll takes.
+    let wait_result: Result<std::process::ExitStatus> = loop {
+        {
+            let mut guard = slot.lock().await;
+            match guard.as_mut() {
+                // Cancel emptied the slot and killed the child.
+                None => break Err(ExportError::Cancelled),
+                Some(child) => match child.try_wait() {
+                    Ok(Some(status)) => break Ok(status),
+                    Ok(None) => {}
+                    Err(e) => break Err(e.into()),
+                },
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(WAIT_POLL_MS)).await;
     };
-    // Drop registry entry so a stale cancel is a no-op.
+
+    // Drop registry entry so a stale cancel is a no-op, and stop the
+    // helper tasks on every exit path (they leaked on error before).
     ctx.registry.jobs.remove(&ctx.job_id);
     size_task.abort();
+    let status = match wait_result {
+        Ok(status) => status,
+        Err(e) => {
+            stderr_task.abort();
+            return Err(e);
+        }
+    };
     let tail = stderr_task.await.unwrap_or_default();
 
     if !status.success() {
@@ -551,6 +607,9 @@ pub async fn cancel(reg: &ExportRegistry, job_id: Uuid) -> bool {
         let mut guard = slot.lock().await;
         if let Some(mut child) = guard.take() {
             let _ = child.start_kill();
+            // Reap the killed process so it doesn't linger as a
+            // zombie; SIGKILL makes this return promptly.
+            let _ = child.wait().await;
             return true;
         }
     }
@@ -597,4 +656,3 @@ async fn resolve_password(profile: &ConnectionProfile) -> Result<Option<String>>
         .map_err(|e| ExportError::Secrets(e.to_string()))?;
     Ok(value)
 }
-

@@ -15,8 +15,8 @@ use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
     AuthMethod, BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate,
-    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult,
-    ResultColumn, Result, RowDelete, RowInsert, Schema, SshAuth, Value,
+    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, Result,
+    ResultColumn, RowDelete, RowInsert, Schema, SshAuth, TlsMode, Value,
 };
 use sqlx::{
     postgres::{PgPool, PgPoolOptions, Postgres},
@@ -129,12 +129,14 @@ async fn resolve_bastion_auth(profile_id: Uuid, auth: &SshAuth) -> Result<Bastio
             } else {
                 Some(password_ref.clone())
             };
-            let pw = pw.ok_or_else(|| {
-                DbError::AuthFailed("ssh tunnel password not in keychain".into())
-            })?;
+            let pw = pw
+                .ok_or_else(|| DbError::AuthFailed("ssh tunnel password not in keychain".into()))?;
             Ok(BastionAuth::Password(pw))
         }
-        SshAuth::Key { key_ref, passphrase_ref } => {
+        SshAuth::Key {
+            key_ref,
+            passphrase_ref,
+        } => {
             // `key_ref` carries the absolute path to the private key file.
             // Passphrase (if any) is keychain-backed.
             let passphrase = match passphrase_ref {
@@ -264,7 +266,10 @@ async fn build_connection_url(
     // saved profiles; if present and non-empty we prefer it, otherwise we
     // fall back to the keychain.
     let (username, password) = match &profile.auth {
-        AuthMethod::Password { username, password_ref } => {
+        AuthMethod::Password {
+            username,
+            password_ref,
+        } => {
             let pw = if password_ref.is_empty() {
                 secrets::get(profile.id, Slot::Password).await?
             } else {
@@ -281,8 +286,8 @@ async fn build_connection_url(
         }
     };
 
-    let mut url = url::Url::parse("postgres://placeholder/")
-        .map_err(|e| DbError::Internal(e.to_string()))?;
+    let mut url =
+        url::Url::parse("postgres://placeholder/").map_err(|e| DbError::Internal(e.to_string()))?;
     url.set_host(Some(host))
         .map_err(|e| DbError::Internal(format!("invalid host: {e:?}")))?;
     url.set_port(Some(port))
@@ -296,6 +301,19 @@ async fn build_connection_url(
                 .map_err(|_| DbError::Internal("invalid password".to_string()))?;
         }
     }
+    // Honor the profile's TLS mode. Without an explicit sslmode sqlx
+    // defaults to `prefer`, which does no certificate verification and
+    // silently falls back to plaintext — so a profile configured as
+    // `verify_full` got neither verification nor a guaranteed
+    // encrypted channel.
+    let sslmode = match profile.tls {
+        TlsMode::Disable => "disable",
+        TlsMode::Prefer => "prefer",
+        TlsMode::Require => "require",
+        TlsMode::VerifyCa => "verify-ca",
+        TlsMode::VerifyFull => "verify-full",
+    };
+    url.query_pairs_mut().append_pair("sslmode", sslmode);
     Ok(url.into())
 }
 
@@ -382,7 +400,9 @@ fn leading_keyword(sql: &str) -> String {
     while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
         i += 1;
     }
-    std::str::from_utf8(&bytes[start..i]).unwrap_or("").to_string()
+    std::str::from_utf8(&bytes[start..i])
+        .unwrap_or("")
+        .to_string()
 }
 
 #[cfg(test)]
@@ -460,11 +480,7 @@ impl Driver for PostgresDriver {
         })
     }
 
-    async fn execute(
-        &self,
-        profile: &ConnectionProfile,
-        req: QueryRequest,
-    ) -> Result<QueryResult> {
+    async fn execute(&self, profile: &ConnectionProfile, req: QueryRequest) -> Result<QueryResult> {
         let pool = self.pool_for(profile).await?;
         let started = std::time::Instant::now();
         let limit = req.limit.unwrap_or(DEFAULT_ROW_LIMIT) as usize;
@@ -515,11 +531,7 @@ impl Driver for PostgresDriver {
         introspect::load_schema(&pool).await
     }
 
-    async fn update_cell(
-        &self,
-        profile: &ConnectionProfile,
-        update: CellUpdate,
-    ) -> Result<u64> {
+    async fn update_cell(&self, profile: &ConnectionProfile, update: CellUpdate) -> Result<u64> {
         if update.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "update_cell requires at least one pk column".into(),
@@ -550,11 +562,7 @@ impl Driver for PostgresDriver {
         Ok(result.rows_affected())
     }
 
-    async fn insert_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowInsert,
-    ) -> Result<u64> {
+    async fn insert_row(&self, profile: &ConnectionProfile, req: RowInsert) -> Result<u64> {
         if req.values.is_empty() {
             return Err(DbError::InvalidInput(
                 "insert_row requires at least one column value".into(),
@@ -587,11 +595,7 @@ impl Driver for PostgresDriver {
         Ok(result.rows_affected())
     }
 
-    async fn delete_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowDelete,
-    ) -> Result<u64> {
+    async fn delete_row(&self, profile: &ConnectionProfile, req: RowDelete) -> Result<u64> {
         if req.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "delete_row requires at least one pk column".into(),
@@ -676,8 +680,7 @@ impl Driver for PostgresDriver {
     ) -> Result<BatchResult> {
         let pool = self.pool_for(profile).await?;
         let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
-        let mut results: Vec<BatchStatementResult> =
-            Vec::with_capacity(statements.len());
+        let mut results: Vec<BatchStatementResult> = Vec::with_capacity(statements.len());
         let mut failed_at: Option<usize> = None;
         for (index, sql) in statements.iter().enumerate() {
             if failed_at.is_some() {
@@ -710,10 +713,7 @@ impl Driver for PostgresDriver {
             Ok(BatchResult {
                 committed: false,
                 statements: results,
-                summary: format!(
-                    "rolled back: statement #{} failed",
-                    failed_at.unwrap() + 1
-                ),
+                summary: format!("rolled back: statement #{} failed", failed_at.unwrap() + 1),
             })
         } else {
             tx.commit().await.map_err(map_sqlx_error)?;

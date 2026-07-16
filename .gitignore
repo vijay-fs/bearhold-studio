@@ -19,6 +19,13 @@ bin/
 src-tauri/target/
 src-tauri/gen/
 
+# Installer-bundled CLI tools (pg_dump, mysqldump, ...). Fetched at
+# build time by scripts/fetch-desktop-tools.mjs, never committed —
+# they're large, platform-specific, and vendor-licensed. The tracked
+# README keeps the directory present for the resources glob.
+apps/desktop/src-tauri/tools/*
+!apps/desktop/src-tauri/tools/README.md
+
 # Rust
 target/
 Cargo.lock.bak

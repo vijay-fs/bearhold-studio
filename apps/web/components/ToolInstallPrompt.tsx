@@ -124,15 +124,18 @@ export function ToolInstallPrompt({
   // ---- State 1: ready (either bundle installed OR system PATH) ----
 
   if (bundle.ready) {
-    // Prefer the system-path label when available — that's what most
-    // users will recognise ("Using /usr/local/opt/libpq/bin/pg_dump").
-    // Fall back to the bundle version string when we downloaded it.
+    // Label priority mirrors the Rust locator's lookup order:
+    //   1. bundled with the installer (the default, no setup needed)
+    //   2. system PATH (user's own install)
+    //   3. downloaded on-demand bundle
     const firstTool = bundle.tools[0];
-    const sourceLabel = bundle.system_available
-      ? firstTool?.system_path
-        ? `Using system tools · ${firstTool.system_path}`
-        : 'Using system tools on PATH'
-      : `Using downloaded bundle · v${bundle.tool_version}`;
+    const sourceLabel = bundle.bundled
+      ? `Bundled with app · v${bundle.tool_version}`
+      : bundle.system_available
+        ? firstTool?.system_path
+          ? `Using system tools · ${firstTool.system_path}`
+          : 'Using system tools on PATH'
+        : `Using downloaded bundle · v${bundle.tool_version}`;
     return (
       <div
         className={cn(

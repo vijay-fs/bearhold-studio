@@ -13,7 +13,9 @@ use uuid::Uuid;
 
 pub fn decode_cell(row: &PgRow, idx: usize, type_name: &str) -> Value {
     match type_name {
-        "BOOL" => opt::<bool>(row, idx).map(Value::Bool).unwrap_or(Value::Null),
+        "BOOL" => opt::<bool>(row, idx)
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
 
         "INT2" => opt::<i16>(row, idx)
             .map(|v| Value::Number(v.into()))
@@ -41,9 +43,9 @@ pub fn decode_cell(row: &PgRow, idx: usize, type_name: &str) -> Value {
             .map(|d| Value::String(d.to_string()))
             .unwrap_or(Value::Null),
 
-        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CHAR" | "CITEXT" => {
-            opt::<String>(row, idx).map(Value::String).unwrap_or(Value::Null)
-        }
+        "TEXT" | "VARCHAR" | "BPCHAR" | "NAME" | "CHAR" | "CITEXT" => opt::<String>(row, idx)
+            .map(Value::String)
+            .unwrap_or(Value::Null),
 
         "UUID" => opt::<Uuid>(row, idx)
             .map(|u| Value::String(u.to_string()))
@@ -144,7 +146,11 @@ mod interval_tests {
     use sqlx::postgres::types::PgInterval;
 
     fn iv(months: i32, days: i32, microseconds: i64) -> PgInterval {
-        PgInterval { months, days, microseconds }
+        PgInterval {
+            months,
+            days,
+            microseconds,
+        }
     }
 
     #[test]

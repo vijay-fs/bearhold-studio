@@ -148,10 +148,7 @@ struct ColumnRow {
 async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
     // information_schema text columns are returned as VARBINARY on MySQL 8+,
     // which sqlx can't decode into String. Force a text conversion via CONVERT.
-    let rows = sqlx::query_as::<
-        _,
-        (String, String, String, String, String, Option<String>, u32),
-    >(
+    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, u32)>(
         r#"
         SELECT CONVERT(TABLE_SCHEMA   USING utf8mb4) AS TABLE_SCHEMA,
                CONVERT(TABLE_NAME     USING utf8mb4) AS TABLE_NAME,
@@ -172,15 +169,17 @@ async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
 
     Ok(rows
         .into_iter()
-        .map(|(schema, table, name, data_type, is_nullable, default, position)| ColumnRow {
-            schema,
-            table,
-            name,
-            data_type,
-            nullable: is_nullable == "YES",
-            default,
-            position,
-        })
+        .map(
+            |(schema, table, name, data_type, is_nullable, default, position)| ColumnRow {
+                schema,
+                table,
+                name,
+                data_type,
+                nullable: is_nullable == "YES",
+                default,
+                position,
+            },
+        )
         .collect())
 }
 
@@ -242,7 +241,15 @@ async fn load_foreign_keys(pool: &MySqlPool, db: &str) -> Result<Vec<ForeignKeyR
     let rows = sqlx::query_as::<
         _,
         (
-            String, String, String, String, String, String, String, String, String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
+            String,
         ),
     >(
         r#"

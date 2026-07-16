@@ -118,6 +118,13 @@ export function loadSqlInWorkspace(
   autoRun: boolean,
   tableRef?: { schema: string; table: string },
 ): void {
+  // Both transports carry the SAME nonce. The SQL page dedupes on it,
+  // so whichever path arrives first wins and the other is a no-op —
+  // fixing the double-open (mount-drain AND event both firing) and the
+  // stale-key replay (a leftover payload auto-running against a
+  // different connection on the next navigation).
+  const nonce = crypto.randomUUID();
+  sessionStorage.setItem('dbstudio.pendingSqlNonce', nonce);
   sessionStorage.setItem('dbstudio.pendingSql', sql);
   sessionStorage.setItem('dbstudio.pendingSqlAutoRun', autoRun ? '1' : '0');
   if (tableRef) {
@@ -132,7 +139,7 @@ export function loadSqlInWorkspace(
   setTimeout(() => {
     window.dispatchEvent(
       new CustomEvent('palette-load-sql', {
-        detail: { sql, autoRun, tableRef },
+        detail: { sql, autoRun, tableRef, nonce },
       }),
     );
   }, 50);

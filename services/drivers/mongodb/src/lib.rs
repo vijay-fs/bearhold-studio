@@ -5,13 +5,13 @@
 
 use std::sync::Arc;
 
-use mongodb::bson::{self, Bson, Document};
 use dashmap::DashMap;
 use dbstudio_core::{
     secrets::{self, Slot},
     AuthMethod, ConnectionProfile, DbError, Result, TlsMode,
 };
 use futures_util::stream::TryStreamExt;
+use mongodb::bson::{self, Bson, Document};
 use mongodb::{
     options::{ClientOptions, FindOptions},
     Client,
@@ -107,7 +107,11 @@ impl MongoDriver {
             .database(&req.database)
             .collection::<Document>(&req.collection);
 
-        let filter = json_to_doc(req.filter.clone().unwrap_or(Value::Object(Default::default())))?;
+        let filter = json_to_doc(
+            req.filter
+                .clone()
+                .unwrap_or(Value::Object(Default::default())),
+        )?;
         let sort = match req.sort {
             Some(v) => Some(json_to_doc(v)?),
             None => None,
@@ -167,9 +171,7 @@ impl MongoDriver {
         document: Value,
     ) -> Result<Value> {
         let client = self.client_for(profile).await?;
-        let coll = client
-            .database(database)
-            .collection::<Document>(collection);
+        let coll = client.database(database).collection::<Document>(collection);
         let doc = json_to_doc(document)?;
         let result = coll.insert_one(doc).await.map_err(map_mongo_err)?;
         Ok(Bson::from(result.inserted_id).into_canonical_extjson())
@@ -188,18 +190,13 @@ impl MongoDriver {
         document: Value,
     ) -> Result<u64> {
         let client = self.client_for(profile).await?;
-        let coll = client
-            .database(database)
-            .collection::<Document>(collection);
+        let coll = client.database(database).collection::<Document>(collection);
         let mut doc = json_to_doc(document)?;
-        let id = doc.remove("_id").ok_or_else(|| {
-            DbError::InvalidInput("document must include _id for replace".into())
-        })?;
+        let id = doc
+            .remove("_id")
+            .ok_or_else(|| DbError::InvalidInput("document must include _id for replace".into()))?;
         let filter = bson::doc! { "_id": id };
-        let result = coll
-            .replace_one(filter, doc)
-            .await
-            .map_err(map_mongo_err)?;
+        let result = coll.replace_one(filter, doc).await.map_err(map_mongo_err)?;
         Ok(result.modified_count)
     }
 
@@ -213,9 +210,7 @@ impl MongoDriver {
         id: Value,
     ) -> Result<u64> {
         let client = self.client_for(profile).await?;
-        let coll = client
-            .database(database)
-            .collection::<Document>(collection);
+        let coll = client.database(database).collection::<Document>(collection);
         let filter = bson::doc! { "_id": json_to_bson(id)? };
         let result = coll.delete_one(filter).await.map_err(map_mongo_err)?;
         Ok(result.deleted_count)
@@ -285,18 +280,21 @@ async fn build_uri(profile: &ConnectionProfile) -> Result<String> {
     } else {
         profile.host.clone()
     };
-    let port = if profile.port == 0 { 27017 } else { profile.port };
+    let port = if profile.port == 0 {
+        27017
+    } else {
+        profile.port
+    };
 
     let creds = if user.is_empty() {
         String::new()
     } else {
-        format!(
-            "{}:{}@",
-            percent_encode(&user),
-            percent_encode(&pass),
-        )
+        format!("{}:{}@", percent_encode(&user), percent_encode(&pass),)
     };
-    let tls = matches!(profile.tls, TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull);
+    let tls = matches!(
+        profile.tls,
+        TlsMode::Require | TlsMode::VerifyCa | TlsMode::VerifyFull
+    );
     let tls_qs = if tls { "?tls=true" } else { "" };
 
     let db_segment = if profile.database.is_empty() {
@@ -332,9 +330,7 @@ fn map_mongo_err(e: mongodb::error::Error) -> DbError {
     use mongodb::error::ErrorKind;
     match *e.kind {
         ErrorKind::Authentication { .. } => DbError::AuthFailed(e.to_string()),
-        ErrorKind::ServerSelection { .. } | ErrorKind::Io(_) => {
-            DbError::Connection(e.to_string())
-        }
+        ErrorKind::ServerSelection { .. } | ErrorKind::Io(_) => DbError::Connection(e.to_string()),
         _ => DbError::Internal(e.to_string()),
     }
 }
@@ -351,47 +347,22 @@ fn json_to_doc(v: Value) -> Result<Document> {
     }
 }
 
-/// Convert a serde_json::Value into a BSON value. Strings shaped like
-/// MongoDB extended-JSON `$oid` get parsed back into ObjectId so users
-/// can paste `{"_id": {"$oid": "..."}}` straight from Compass.
+/// Convert a serde_json::Value into a BSON value via bson's extended-
+/// JSON deserializer (accepts BOTH canonical and relaxed forms).
+///
+/// This must be the exact inverse of `doc_to_json`, which renders
+/// documents as canonical extJSON: `{"$numberInt":"5"}`, `{"$date":...}`,
+/// `{"$oid":...}`, etc. The previous hand-rolled version only reversed
+/// `$oid`, so editing any document with a number/date/binary field
+/// re-saved those wrappers as literal nested documents — silent
+/// corruption of every non-string field.
+///
+/// Query-operator keys (`$gt`, `$in`, ...) are NOT extJSON keywords;
+/// bson's parser passes them through as plain documents, so filters,
+/// sorts, and projections still work through this same path.
 fn json_to_bson(v: Value) -> Result<Bson> {
-    match v {
-        Value::Null => Ok(Bson::Null),
-        Value::Bool(b) => Ok(Bson::Boolean(b)),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                Ok(Bson::Int64(i))
-            } else if let Some(f) = n.as_f64() {
-                Ok(Bson::Double(f))
-            } else {
-                Ok(Bson::String(n.to_string()))
-            }
-        }
-        Value::String(s) => Ok(Bson::String(s)),
-        Value::Array(a) => {
-            let mut out = Vec::with_capacity(a.len());
-            for item in a {
-                out.push(json_to_bson(item)?);
-            }
-            Ok(Bson::Array(out))
-        }
-        Value::Object(map) => {
-            // Extended-JSON shortcuts the user might paste:
-            // `{ "$oid": "..." }` → ObjectId.
-            if map.len() == 1 {
-                if let Some(Value::String(s)) = map.get("$oid") {
-                    if let Ok(oid) = bson::oid::ObjectId::parse_str(s) {
-                        return Ok(Bson::ObjectId(oid));
-                    }
-                }
-            }
-            let mut doc = Document::new();
-            for (k, val) in map {
-                doc.insert(k, json_to_bson(val)?);
-            }
-            Ok(Bson::Document(doc))
-        }
-    }
+    Bson::try_from(v)
+        .map_err(|e| DbError::InvalidInput(format!("invalid JSON / extended JSON: {e}")))
 }
 
 /// Render a BSON Document as MongoDB extended-JSON — the shape Compass /

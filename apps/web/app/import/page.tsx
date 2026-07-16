@@ -256,18 +256,25 @@ function ImportRunner({
   const start = async () => {
     setLog([]);
     const started = Date.now();
-    setRun({ kind: 'running', jobId: 'pending', startedAt: started });
+    // Generate the job id HERE — start_import only resolves after the
+    // job finishes, so a backend-generated id could never be used to
+    // match progress events or cancel while the job runs.
+    const jobId = crypto.randomUUID();
+    setRun({ kind: 'running', jobId, startedAt: started });
     try {
-      await api.startImport({
-        profile: target,
-        source_path: probe.path,
-        format,
-        single_transaction: singleTx,
-        drop_before_create: dropBeforeCreate,
-        no_owner: noOwner,
-        parallel_jobs: null,
-        stop_on_error: stopOnError,
-      });
+      await api.startImport(
+        {
+          profile: target,
+          source_path: probe.path,
+          format,
+          single_transaction: singleTx,
+          drop_before_create: dropBeforeCreate,
+          no_owner: noOwner,
+          parallel_jobs: null,
+          stop_on_error: stopOnError,
+        },
+        jobId,
+      );
       setRun({ kind: 'ok', elapsedMs: Date.now() - started });
       onDone();
     } catch (e: unknown) {
@@ -278,8 +285,12 @@ function ImportRunner({
 
   const cancel = async () => {
     if (run.kind !== 'running') return;
+    // Don't set a terminal state here — the backend kills the child
+    // and the awaited startImport rejects with "job cancelled by
+    // user", which lands in start()'s catch. Setting "Cancelled"
+    // eagerly used to get overwritten by the success banner when the
+    // (un-killed) job later finished.
     await api.cancelImport(run.jobId).catch(() => false);
-    setRun({ kind: 'error', message: 'Cancelled by user.' });
   };
 
   const isPg = target.engine === 'postgres';

@@ -30,6 +30,7 @@ import {
   Download,
   Upload,
   ScrollText,
+  Scale,
 } from 'lucide-react';
 
 import { useConnections } from '@/store/connections';
@@ -317,6 +318,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             label="Migrations"
             icon={<ScrollText className="h-3.5 w-3.5 shrink-0" />}
             active={pathname === '/migrations'}
+          />
+          <SidebarUtilityLink
+            href={'/licenses' as Route}
+            label="Licenses"
+            icon={<Scale className="h-3.5 w-3.5 shrink-0" />}
+            active={pathname === '/licenses'}
           />
         </div>
 

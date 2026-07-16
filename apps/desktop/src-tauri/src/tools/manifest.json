@@ -6,6 +6,12 @@
       "tool_version": "16.4",
       "tools": ["pg_dump", "pg_restore", "psql"],
       "covers_engines": ["postgres"],
+      "license": {
+        "spdx": "PostgreSQL",
+        "url": "https://www.postgresql.org/about/licence/",
+        "copyright": "Copyright (c) 1996-2024, PostgreSQL Global Development Group; Portions Copyright (c) 1994, The Regents of the University of California",
+        "copyleft": false
+      },
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/postgres-16.4-darwin-arm64.tar.gz",
@@ -42,6 +48,13 @@
       "tool_version": "8.0.39",
       "tools": ["mysqldump", "mysql"],
       "covers_engines": ["mysql"],
+      "license": {
+        "spdx": "GPL-2.0-only",
+        "url": "https://www.gnu.org/licenses/old-licenses/gpl-2.0.html",
+        "copyright": "Copyright (c) Oracle and/or its affiliates",
+        "copyleft": true,
+        "source_url": "https://downloads.mysql.com/archives/community/"
+      },
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/mysql-8.0.39-darwin-arm64.tar.gz",
@@ -78,6 +91,12 @@
       "tool_version": "3.46.1",
       "tools": ["sqlite3"],
       "covers_engines": ["sqlite"],
+      "license": {
+        "spdx": "blessing",
+        "url": "https://www.sqlite.org/copyright.html",
+        "copyright": "SQLite is in the public domain",
+        "copyleft": false
+      },
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/sqlite-tools-3.46.1-darwin-arm64.tar.gz",
@@ -114,6 +133,12 @@
       "tool_version": "100.10.0",
       "tools": ["mongodump", "mongorestore", "mongoexport", "mongoimport"],
       "covers_engines": ["mongodb"],
+      "license": {
+        "spdx": "Apache-2.0",
+        "url": "https://github.com/mongodb/mongo-tools/blob/master/LICENSE.md",
+        "copyright": "Copyright (c) MongoDB, Inc.",
+        "copyleft": false
+      },
       "platforms": {
         "darwin-aarch64": {
           "url": "https://fastdl.mongodb.org/tools/db/mongodb-database-tools-macos-arm64-100.10.0.zip",
@@ -150,6 +175,12 @@
       "tool_version": "7.2.6",
       "tools": ["redis-cli"],
       "covers_engines": ["redis"],
+      "license": {
+        "spdx": "BSD-3-Clause",
+        "url": "https://github.com/valkey-io/valkey/blob/unstable/COPYING",
+        "copyright": "Copyright (c) 2006-2020, Salvatore Sanfilippo; Copyright (c) 2024-present, Valkey contributors",
+        "copyleft": false
+      },
       "platforms": {
         "darwin-aarch64": {
           "url": "https://tools.bearhold.studio/valkey-cli-7.2.6-darwin-arm64.tar.gz",

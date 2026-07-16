@@ -61,6 +61,38 @@ pub fn tool_executable(
     candidates.into_iter().find(|p| p.is_file())
 }
 
+/// Find a tool binary inside the bundle that ships *inside the
+/// installer* (Tauri resources), rather than the app-data download
+/// cache. These land in the app's resource directory under:
+///
+///   tools/
+///     postgres/bin/pg_dump
+///     mysql/bin/mysqldump
+///     ...
+///
+/// There is no version subdirectory here — the bundled tools are
+/// pinned at build time to the versions in `manifest.json`, so the
+/// bundle key alone is enough. Searches `bin/` first, then the bundle
+/// root, mirroring `tool_executable`. Adds `.exe` on Windows.
+///
+/// Returns `None` when no resource dir was provided (e.g. `tauri dev`
+/// before tools have been fetched) or the binary simply isn't present,
+/// so the caller can fall back to the download cache / system PATH.
+pub fn bundled_tool_executable(
+    resource_dir: Option<&Path>,
+    bundle_key: &str,
+    tool_name: &str,
+) -> Option<PathBuf> {
+    let root = resource_dir?.join("tools").join(bundle_key);
+    let exe_name = if cfg!(target_os = "windows") {
+        format!("{tool_name}.exe")
+    } else {
+        tool_name.to_string()
+    };
+    let candidates = [root.join("bin").join(&exe_name), root.join(&exe_name)];
+    candidates.into_iter().find(|p| p.is_file())
+}
+
 pub fn write_installed_marker(
     app_data_dir: &Path,
     bundle_key: &str,

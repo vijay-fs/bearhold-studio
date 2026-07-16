@@ -143,6 +143,13 @@ export const api = {
     return invoke('uninstall_tool_bundle', { bundleKey });
   },
 
+  /** Open Source Notices for the CLI tools bundled in the installer
+   *  (license text + any GPL written offer). Null when nothing was
+   *  bundled — e.g. a dev build with no fetched tools. */
+  thirdPartyNotices(): Promise<string | null> {
+    return invoke('third_party_notices', {});
+  },
+
   // ---- Dump format detection --------------------------------------
   detectDumpFormat(path: string): Promise<DumpProbe> {
     return invoke('detect_dump_format', { path });
@@ -157,16 +164,20 @@ export const api = {
   },
 
   // ---- Export -----------------------------------------------------
-  startExport(options: ExportOptions): Promise<ExportResult> {
-    return invoke('start_export', { options });
+  // The caller generates jobId (crypto.randomUUID) and passes it up
+  // front: start_export only resolves after the job finishes, so a
+  // backend-generated id could never be used to filter progress
+  // events or cancel a running job.
+  startExport(options: ExportOptions, jobId: string): Promise<ExportResult> {
+    return invoke('start_export', { options, jobId });
   },
   cancelExport(jobId: string): Promise<boolean> {
     return invoke('cancel_export', { jobId });
   },
 
   // ---- Import -----------------------------------------------------
-  startImport(options: ImportOptions): Promise<ImportResult> {
-    return invoke('start_import', { options });
+  startImport(options: ImportOptions, jobId: string): Promise<ImportResult> {
+    return invoke('start_import', { options, jobId });
   },
   cancelImport(jobId: string): Promise<boolean> {
     return invoke('cancel_import', { jobId });
