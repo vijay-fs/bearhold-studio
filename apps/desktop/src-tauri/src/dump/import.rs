@@ -220,7 +220,11 @@ async fn run_pg_import(
         // in a single transaction so a mid-file failure rolls back
         // cleanly.
         cmd.arg("-f").arg(&opts.source_path);
-        if opts.stop_on_error {
+        // ON_ERROR_STOP is forced whenever -1 is on: inside a single
+        // transaction the first error aborts the txn anyway, and
+        // without ON_ERROR_STOP psql keeps going, rolls everything
+        // back at COMMIT and still exits 0 — a silent empty restore.
+        if opts.stop_on_error || opts.single_transaction {
             cmd.arg("-v").arg("ON_ERROR_STOP=1");
         }
         if opts.single_transaction {
@@ -237,7 +241,9 @@ async fn run_pg_import(
         if opts.no_owner {
             cmd.arg("--no-owner").arg("--no-privileges");
         }
-        if opts.stop_on_error {
+        // Same coupling as the psql branch: --single-transaction makes
+        // any error fatal regardless, so surface that honestly.
+        if opts.stop_on_error || opts.single_transaction {
             cmd.arg("--exit-on-error");
         }
         if opts.single_transaction {
@@ -271,7 +277,24 @@ async fn run_pg_import(
         cmd.env_remove(var);
     }
 
-    spawn_and_wait(ctx, cmd, sink, &opts.source_path, None).await
+    // Lenient mode (pg_restore, stop-on-error off, no single txn):
+    // pg_restore exits 1 whenever ANY error was ignored, even though
+    // the restore itself completed. Treat "completed with ignored
+    // errors" as success-with-warnings — the errors are already in the
+    // progress log. This is what makes recovering from pg_dump/server
+    // version skew (`SET transaction_timeout` et al.) possible at all.
+    let lenient = !use_psql && !opts.stop_on_error && !opts.single_transaction;
+    let result = spawn_and_wait(ctx, cmd, sink.clone(), &opts.source_path, None).await;
+    match result {
+        Err(ImportError::ChildFailed {
+            code: Some(1),
+            ref stderr_tail,
+        }) if lenient && stderr_tail.contains("errors ignored on restore") => {
+            sink.on_stderr("import completed; some statements were skipped (see errors above)");
+            Ok(())
+        }
+        other => other,
+    }
 }
 
 // ---- MySQL -----------------------------------------------------------
@@ -555,11 +578,28 @@ async fn spawn_and_wait(
     if !status.success() {
         return Err(ImportError::ChildFailed {
             code: status.code(),
-            stderr_tail: tail,
+            stderr_tail: augment_stderr_hint(tail),
         });
     }
     sink.on_bytes_read(source_size);
     Ok(())
+}
+
+/// Append an actionable hint to known-confusing tool errors.
+fn augment_stderr_hint(tail: String) -> String {
+    // pg_dump from a NEWER major than the target server emits SET
+    // parameters the old server rejects (e.g. `transaction_timeout`,
+    // new in PG 17, emitted by pg_dump 17+). With stop-on-error the
+    // whole restore dies on that first harmless SET.
+    if tail.contains("unrecognized configuration parameter") {
+        return format!(
+            "{tail}\nHint: this dump was written by a newer pg_dump than the target \
+             server understands. Turn off \"Stop on first error\" and re-run the import \
+             (the unknown SET is harmless), or export with a pg_dump that matches the \
+             server version."
+        );
+    }
+    tail
 }
 
 pub async fn cancel(reg: &ImportRegistry, job_id: Uuid) -> bool {
