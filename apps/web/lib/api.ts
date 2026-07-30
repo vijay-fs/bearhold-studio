@@ -231,6 +231,55 @@ export const api = {
     find(profile: ConnectionProfile, request: MongoFindRequest): Promise<MongoFindResponse> {
       return invoke('mongo_find', { profile, request });
     },
+    /** Run an aggregation pipeline (extended-JSON stage documents).
+     *  A trailing $limit is appended server-side when absent. */
+    aggregate(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      pipeline: Array<Record<string, unknown>>,
+      limit?: number,
+    ): Promise<MongoFindResponse> {
+      return invoke('mongo_aggregate', { profile, database, collection, pipeline, limit });
+    },
+    /** Index specs: `{ key: {...}, name, unique?, sparse?, expireAfterSeconds? }`. */
+    listIndexes(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+    ): Promise<Array<Record<string, unknown>>> {
+      return invoke('mongo_list_indexes', { profile, database, collection });
+    },
+    /** Create an index from a key spec (`{"field": 1}`). Returns the
+     *  server-assigned index name. */
+    createIndex(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      keys: Record<string, unknown>,
+      unique: boolean,
+      name?: string,
+    ): Promise<string> {
+      return invoke('mongo_create_index', { profile, database, collection, keys, unique, name });
+    },
+    dropIndex(
+      profile: ConnectionProfile,
+      database: string,
+      collection: string,
+      indexName: string,
+    ): Promise<null> {
+      return invoke('mongo_drop_index', { profile, database, collection, indexName });
+    },
+    createCollection(
+      profile: ConnectionProfile,
+      database: string,
+      name: string,
+    ): Promise<null> {
+      return invoke('mongo_create_collection', { profile, database, name });
+    },
+    dropCollection(profile: ConnectionProfile, database: string, name: string): Promise<null> {
+      return invoke('mongo_drop_collection', { profile, database, name });
+    },
     /** Insert one document. Returns the inserted `_id` in extended-
      *  JSON form so the UI can refetch the row that just landed. */
     insertOne(
@@ -282,6 +331,19 @@ export const api = {
     },
     delete(profile: ConnectionProfile, key: string): Promise<number> {
       return invoke('redis_delete', { profile, key });
+    },
+    /** SET a string value (string keys and brand-new keys only). */
+    setString(profile: ConnectionProfile, key: string, value: string): Promise<null> {
+      return invoke('redis_set_string', { profile, key, value });
+    },
+    /** EXPIRE with a positive TTL, or PERSIST when ttlSeconds is null.
+     *  Resolves false when the key doesn't exist. */
+    setTtl(profile: ConnectionProfile, key: string, ttlSeconds: number | null): Promise<boolean> {
+      return invoke('redis_set_ttl', { profile, key, ttlSeconds });
+    },
+    /** RENAMENX semantics — errors instead of clobbering an existing key. */
+    rename(profile: ConnectionProfile, from: string, to: string): Promise<null> {
+      return invoke('redis_rename', { profile, from, to });
     },
     disconnect(profile: ConnectionProfile): Promise<null> {
       return invoke('redis_disconnect', { profile });

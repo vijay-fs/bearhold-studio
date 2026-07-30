@@ -1,0 +1,36 @@
+{
+  "connections": [
+    {
+      "ConnectionName": "compare-demo · pg-prod",
+      "Driver": "PostgreSQL",
+      "DatabaseHost": "127.0.0.1",
+      "DatabasePort": 5450,
+      "DatabaseName": "shop",
+      "DatabaseUser": "dbstudio"
+    },
+    {
+      "ConnectionName": "compare-demo · pg-staging",
+      "Driver": "PostgreSQL",
+      "DatabaseHost": "127.0.0.1",
+      "DatabasePort": 5451,
+      "DatabaseName": "shop",
+      "DatabaseUser": "dbstudio"
+    },
+    {
+      "ConnectionName": "compare-demo · mysql-prod",
+      "Driver": "MySQL",
+      "DatabaseHost": "127.0.0.1",
+      "DatabasePort": 3350,
+      "DatabaseName": "shop",
+      "DatabaseUser": "dbstudio"
+    },
+    {
+      "ConnectionName": "compare-demo · mysql-staging",
+      "Driver": "MySQL",
+      "DatabaseHost": "127.0.0.1",
+      "DatabasePort": 3351,
+      "DatabaseName": "shop",
+      "DatabaseUser": "dbstudio"
+    }
+  ]
+}

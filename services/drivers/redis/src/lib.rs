@@ -247,7 +247,27 @@ impl RedisDriver {
                 }
                 RedisValue::SortedSet { items, total }
             }
-            "stream" => RedisValue::Stream,
+            "stream" => {
+                let len_raw: redis::Value = redis::cmd("XLEN")
+                    .arg(key)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(map_redis_err)?;
+                let total = value_to_int(&len_raw).unwrap_or(0).max(0) as u64;
+                // First 100 entries, oldest-first. Entries decode as
+                // (id, [field, value, ...]) pairs.
+                let raw: redis::Value = redis::cmd("XRANGE")
+                    .arg(key)
+                    .arg("-")
+                    .arg("+")
+                    .arg("COUNT")
+                    .arg(100)
+                    .query_async(&mut conn)
+                    .await
+                    .map_err(map_redis_err)?;
+                let entries = decode_stream_entries(&raw);
+                RedisValue::Stream { entries, total }
+            }
             "none" => RedisValue::None,
             other => RedisValue::Unknown {
                 type_name: other.to_string(),
@@ -260,6 +280,78 @@ impl RedisDriver {
             ttl_seconds,
             value,
         })
+    }
+
+    /// SET a string value. Only offered for string keys (and new keys)
+    /// — structured types get purpose-built editors later.
+    pub async fn set_string(
+        &self,
+        profile: &ConnectionProfile,
+        key: &str,
+        value: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn_for(profile).await?;
+        let _: redis::Value = redis::cmd("SET")
+            .arg(key)
+            .arg(value)
+            .query_async(&mut conn)
+            .await
+            .map_err(map_redis_err)?;
+        Ok(())
+    }
+
+    /// EXPIRE with a positive TTL; `None` runs PERSIST (remove TTL).
+    /// Returns false when the key doesn't exist.
+    pub async fn set_ttl(
+        &self,
+        profile: &ConnectionProfile,
+        key: &str,
+        ttl_seconds: Option<i64>,
+    ) -> Result<bool> {
+        let mut conn = self.conn_for(profile).await?;
+        let raw: redis::Value = match ttl_seconds {
+            Some(secs) if secs > 0 => redis::cmd("EXPIRE")
+                .arg(key)
+                .arg(secs)
+                .query_async(&mut conn)
+                .await
+                .map_err(map_redis_err)?,
+            Some(_) => {
+                return Err(DbError::InvalidInput(
+                    "TTL must be a positive number of seconds".into(),
+                ))
+            }
+            None => redis::cmd("PERSIST")
+                .arg(key)
+                .query_async(&mut conn)
+                .await
+                .map_err(map_redis_err)?,
+        };
+        Ok(value_to_int(&raw).unwrap_or(0) == 1)
+    }
+
+    /// RENAME, refusing to clobber: RENAMENX semantics so an existing
+    /// destination key errors instead of being silently overwritten.
+    pub async fn rename(
+        &self,
+        profile: &ConnectionProfile,
+        from: &str,
+        to: &str,
+    ) -> Result<()> {
+        let mut conn = self.conn_for(profile).await?;
+        let raw: redis::Value = redis::cmd("RENAMENX")
+            .arg(from)
+            .arg(to)
+            .query_async(&mut conn)
+            .await
+            .map_err(map_redis_err)?;
+        if value_to_int(&raw).unwrap_or(0) == 1 {
+            Ok(())
+        } else {
+            Err(DbError::InvalidInput(format!(
+                "cannot rename: key \"{to}\" already exists"
+            )))
+        }
     }
 
     pub async fn delete(&self, profile: &ConnectionProfile, key: &str) -> Result<u64> {
@@ -324,6 +416,24 @@ pub struct RedisKeyDetails {
     pub value: RedisValue,
 }
 
+/// XRANGE replies are nested: [[id, [field, value, ...]], ...].
+fn decode_stream_entries(raw: &redis::Value) -> Vec<(String, Vec<String>)> {
+    let redis::Value::Array(entries) = raw else {
+        return vec![];
+    };
+    entries
+        .iter()
+        .filter_map(|entry| {
+            let redis::Value::Array(pair) = entry else {
+                return None;
+            };
+            let id = value_to_string(pair.first()?)?;
+            let fields = pair.get(1).map(array_to_strings).unwrap_or_default();
+            Some((id, fields))
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RedisValue {
@@ -349,9 +459,13 @@ pub enum RedisValue {
         /// ZCARD.
         total: u64,
     },
-    /// Stream values are out of scope for the MVP — too much surface
-    /// for one viewer pass. The UI renders a placeholder.
-    Stream,
+    Stream {
+        /// (entry id, flat [field, value, ...] pairs), oldest-first,
+        /// capped at 100 entries for display.
+        entries: Vec<(String, Vec<String>)>,
+        /// XLEN — full stream length.
+        total: u64,
+    },
     Unknown {
         type_name: String,
     },

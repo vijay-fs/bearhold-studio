@@ -216,6 +216,150 @@ impl MongoDriver {
         Ok(result.deleted_count)
     }
 
+    /// Run an aggregation pipeline. Stages arrive as extended-JSON
+    /// documents straight from the UI editor. A `$limit` cap is
+    /// appended when the user's pipeline doesn't end in one, so an
+    /// unbounded `$match`-less pipeline can't flood the renderer.
+    pub async fn aggregate(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        collection: &str,
+        pipeline: Vec<Value>,
+        limit: Option<u32>,
+    ) -> Result<FindResponse> {
+        let client = self.client_for(profile).await?;
+        let coll = client.database(database).collection::<Document>(collection);
+
+        let mut stages: Vec<Document> = pipeline
+            .into_iter()
+            .map(json_to_doc)
+            .collect::<Result<_>>()?;
+        let cap = i64::from(limit.unwrap_or(500).min(1000));
+        let ends_in_limit = stages
+            .last()
+            .map(|d| d.contains_key("$limit"))
+            .unwrap_or(false);
+        if !ends_in_limit {
+            stages.push(bson::doc! { "$limit": cap });
+        }
+
+        let started = std::time::Instant::now();
+        let cursor = coll.aggregate(stages).await.map_err(map_mongo_err)?;
+        let docs: Vec<Document> = cursor.try_collect().await.map_err(map_mongo_err)?;
+        let elapsed_ms = started.elapsed().as_millis() as u64;
+        let documents: Vec<Value> = docs.iter().map(doc_to_json).collect();
+        let approx_total = documents.len() as u64;
+        Ok(FindResponse {
+            documents,
+            approx_total,
+            elapsed_ms,
+        })
+    }
+
+    /// List a collection's indexes as extended-JSON specs (key doc,
+    /// name, unique flag, and any other options the server reports).
+    pub async fn list_indexes(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        collection: &str,
+    ) -> Result<Vec<Value>> {
+        let client = self.client_for(profile).await?;
+        let coll = client.database(database).collection::<Document>(collection);
+        let cursor = coll.list_indexes().await.map_err(map_mongo_err)?;
+        let indexes: Vec<mongodb::IndexModel> =
+            cursor.try_collect().await.map_err(map_mongo_err)?;
+        Ok(indexes
+            .into_iter()
+            .map(|m| {
+                let mut doc = Document::new();
+                doc.insert("key", m.keys);
+                if let Some(opts) = m.options {
+                    if let Some(name) = opts.name {
+                        doc.insert("name", name);
+                    }
+                    if let Some(unique) = opts.unique {
+                        doc.insert("unique", unique);
+                    }
+                    if let Some(sparse) = opts.sparse {
+                        doc.insert("sparse", sparse);
+                    }
+                    if let Some(ttl) = opts.expire_after {
+                        doc.insert("expireAfterSeconds", ttl.as_secs() as i64);
+                    }
+                }
+                doc_to_json(&doc)
+            })
+            .collect())
+    }
+
+    /// Create an index. `keys` is the standard key spec document
+    /// (`{"field": 1, "other": -1}`). Returns the server-assigned name.
+    pub async fn create_index(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        collection: &str,
+        keys: Value,
+        unique: bool,
+        name: Option<String>,
+    ) -> Result<String> {
+        let client = self.client_for(profile).await?;
+        let coll = client.database(database).collection::<Document>(collection);
+        let options = mongodb::options::IndexOptions::builder()
+            .unique(unique)
+            .name(name)
+            .build();
+        let model = mongodb::IndexModel::builder()
+            .keys(json_to_doc(keys)?)
+            .options(options)
+            .build();
+        let result = coll.create_index(model).await.map_err(map_mongo_err)?;
+        Ok(result.index_name)
+    }
+
+    pub async fn drop_index(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        collection: &str,
+        index_name: &str,
+    ) -> Result<()> {
+        let client = self.client_for(profile).await?;
+        let coll = client.database(database).collection::<Document>(collection);
+        coll.drop_index(index_name).await.map_err(map_mongo_err)
+    }
+
+    pub async fn create_collection(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        name: &str,
+    ) -> Result<()> {
+        let client = self.client_for(profile).await?;
+        client
+            .database(database)
+            .create_collection(name)
+            .await
+            .map_err(map_mongo_err)
+    }
+
+    pub async fn drop_collection(
+        &self,
+        profile: &ConnectionProfile,
+        database: &str,
+        name: &str,
+    ) -> Result<()> {
+        let client = self.client_for(profile).await?;
+        client
+            .database(database)
+            .collection::<Document>(name)
+            .drop()
+            .await
+            .map_err(map_mongo_err)
+    }
+
     /// Drop the cached client. Next call lazily reopens the pool.
     pub async fn disconnect(&self, profile: &ConnectionProfile) -> Result<()> {
         self.clients.remove(&profile.id);

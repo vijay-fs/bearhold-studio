@@ -1,0 +1,227 @@
+# Multi-version test matrix. One container per (engine, major-version)
+# combination that we support in production. Ports are laid out on a
+# grid so tests can address any instance without discovery:
+#
+#   Postgres    54xx        (5412, 5414, 5416, 5417)
+#   MySQL       33xx        (3357, 3380, 3384)
+#   Mongo       270xx       (27017 for v7)
+#   Redis       637x        (6379 for v7)
+#
+# Everything is on the `dbstudio-test` network so containers can also
+# talk to each other by service name if needed. All volumes are named
+# so a `docker compose down -v` cleans everything up predictably.
+#
+# Bring up: `docker compose -f infra/test/docker-compose.yml up -d`
+# Wait for healthy: `docker compose -f infra/test/docker-compose.yml ps`
+# Tear down + wipe: `docker compose -f infra/test/docker-compose.yml down -v`
+
+name: dbstudio-test
+
+x-common-pg-env: &common-pg-env
+  POSTGRES_USER: dbstudio
+  POSTGRES_PASSWORD: dbstudio_test
+  POSTGRES_DB: shop
+  POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+
+x-common-mysql-env: &common-mysql-env
+  MYSQL_ROOT_PASSWORD: dbstudio_root
+  MYSQL_USER: dbstudio
+  MYSQL_PASSWORD: dbstudio_test
+  MYSQL_DATABASE: shop
+
+services:
+  # ---- PostgreSQL matrix -----------------------------------------------
+  # Covers oldest maintained (12) through current (17). 12 stops receiving
+  # patches in Nov 2027 but is still deployed in the wild.
+
+  pg12:
+    image: postgres:12-alpine
+    container_name: dbstudio-test-pg12
+    restart: unless-stopped
+    environment: *common-pg-env
+    ports: ["5412:5432"]
+    volumes:
+      - test_pg12:/var/lib/postgresql/data
+      - ./seed/pg.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  pg14:
+    image: postgres:14-alpine
+    container_name: dbstudio-test-pg14
+    restart: unless-stopped
+    environment: *common-pg-env
+    ports: ["5414:5432"]
+    volumes:
+      - test_pg14:/var/lib/postgresql/data
+      - ./seed/pg.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  pg16:
+    image: postgres:16-alpine
+    container_name: dbstudio-test-pg16
+    restart: unless-stopped
+    environment: *common-pg-env
+    ports: ["5416:5432"]
+    volumes:
+      - test_pg16:/var/lib/postgresql/data
+      - ./seed/pg.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  pg17:
+    image: postgres:17-alpine
+    container_name: dbstudio-test-pg17
+    restart: unless-stopped
+    environment: *common-pg-env
+    ports: ["5417:5432"]
+    volumes:
+      - test_pg17:/var/lib/postgresql/data
+      - ./seed/pg.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # ---- MySQL matrix ----------------------------------------------------
+  # 5.7 is EOL upstream but still ships in old managed instances. 8.0 is
+  # the current stable most people run. 8.4 is the newest LTS.
+
+  mysql57:
+    image: mysql:5.7
+    # mysql:5.7 was never published for arm64 — force amd64 so the
+    # matrix still comes up on Apple Silicon (Rosetta emulation).
+    platform: linux/amd64
+    container_name: dbstudio-test-mysql57
+    restart: unless-stopped
+    environment: *common-mysql-env
+    ports: ["3357:3306"]
+    volumes:
+      - test_mysql57:/var/lib/mysql
+      - ./seed/mysql-5.7.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udbstudio", "-pdbstudio_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mysql80:
+    image: mysql:8.0
+    container_name: dbstudio-test-mysql80
+    restart: unless-stopped
+    environment: *common-mysql-env
+    ports: ["3380:3306"]
+    volumes:
+      - test_mysql80:/var/lib/mysql
+      - ./seed/mysql-8.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udbstudio", "-pdbstudio_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mysql84:
+    image: mysql:8.4
+    container_name: dbstudio-test-mysql84
+    restart: unless-stopped
+    environment: *common-mysql-env
+    ports: ["3384:3306"]
+    volumes:
+      - test_mysql84:/var/lib/mysql
+      - ./seed/mysql-8.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    command:
+      - --mysql-native-password=ON
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udbstudio", "-pdbstudio_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ---- MongoDB ---------------------------------------------------------
+
+  mongo7:
+    image: mongo:7
+    container_name: dbstudio-test-mongo7
+    restart: unless-stopped
+    ports: ["27017:27017"]
+    volumes:
+      - test_mongo7:/data/db
+      - ./seed/mongo.js:/docker-entrypoint-initdb.d/01-seed.js:ro
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # ---- Redis -----------------------------------------------------------
+
+  redis7:
+    image: redis:7
+    container_name: dbstudio-test-redis7
+    restart: unless-stopped
+    ports: ["6379:6379"]
+    volumes:
+      - test_redis7:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # SSH bastion for tunneled export/import tests. Reaches the database
+  # containers by service name over the compose network — exactly the
+  # "DB only reachable through the jump host" topology tunnels exist
+  # for. The tunnel mod enables AllowTcpForwarding (off by default in
+  # this image).
+  bastion:
+    image: lscr.io/linuxserver/openssh-server:latest
+    container_name: dbstudio-test-bastion
+    restart: unless-stopped
+    environment:
+      PASSWORD_ACCESS: "true"
+      USER_NAME: tunnel
+      USER_PASSWORD: tunnel_test
+      DOCKER_MODS: linuxserver/mods:openssh-server-ssh-tunnel
+    ports: ["2222:2222"]
+
+  redis-seed:
+    image: redis:7
+    depends_on:
+      redis7:
+        condition: service_healthy
+    volumes:
+      - ./seed/redis-seed.sh:/seed.sh:ro
+    entrypoint: ["sh", "/seed.sh"]
+    restart: "no"
+
+volumes:
+  test_pg12:
+  test_pg14:
+  test_pg16:
+  test_pg17:
+  test_mysql57:
+  test_mysql80:
+  test_mysql84:
+  test_mongo7:
+  test_redis7:

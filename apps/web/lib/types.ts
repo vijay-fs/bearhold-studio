@@ -141,7 +141,7 @@ export type RedisValue =
   | { kind: 'set'; members: string[]; total: number }
   | { kind: 'hash'; fields: Record<string, string>; total: number }
   | { kind: 'sorted_set'; items: Array<[string, number]>; total: number }
-  | { kind: 'stream' }
+  | { kind: 'stream'; entries: Array<[string, string[]]>; total: number }
   | { kind: 'unknown'; type_name: string };
 
 export interface RedisKeyEntry {

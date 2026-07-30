@@ -1,0 +1,25 @@
+name: dbstudio-dev
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: dbstudio-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dbstudio
+      POSTGRES_PASSWORD: dbstudio_dev
+      POSTGRES_DB: dbstudio
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports:
+      - "5433:5432"
+    volumes:
+      - dbstudio_pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d dbstudio"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  dbstudio_pgdata:

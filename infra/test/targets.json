@@ -1,0 +1,19 @@
+{
+  "$schema": "targets schema — read by the E2E harness at scripts/test-e2e/",
+  "$notes": [
+    "Every entry is a distinct docker container from infra/test/docker-compose.yml.",
+    "The harness treats `engine` + `version` as the test axis and iterates.",
+    "`host` is 127.0.0.1 unless the harness runs inside the compose network."
+  ],
+  "targets": [
+    { "id": "pg12",       "engine": "postgres",  "version_major": 12, "host": "127.0.0.1", "port": 5412, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "pg14",       "engine": "postgres",  "version_major": 14, "host": "127.0.0.1", "port": 5414, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "pg16",       "engine": "postgres",  "version_major": 16, "host": "127.0.0.1", "port": 5416, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "pg17",       "engine": "postgres",  "version_major": 17, "host": "127.0.0.1", "port": 5417, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "mysql57",    "engine": "mysql",     "version_major": 5,  "version_minor": 7, "host": "127.0.0.1", "port": 3357, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "mysql80",    "engine": "mysql",     "version_major": 8,  "version_minor": 0, "host": "127.0.0.1", "port": 3380, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "mysql84",    "engine": "mysql",     "version_major": 8,  "version_minor": 4, "host": "127.0.0.1", "port": 3384, "user": "dbstudio", "password": "dbstudio_test", "database": "shop" },
+    { "id": "mongo7",     "engine": "mongodb",   "version_major": 7,  "host": "127.0.0.1", "port": 27017, "database": "shop" },
+    { "id": "redis7",     "engine": "redis",     "version_major": 7,  "host": "127.0.0.1", "port": 6379 }
+  ]
+}

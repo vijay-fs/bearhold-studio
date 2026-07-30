@@ -1,0 +1,131 @@
+# Compare-demo stack: two databases side by side per engine so the
+# /compare workspace has meaningful diffs to exercise. Runs on ports
+# that don't collide with the dev or test-matrix stacks:
+#
+#   Postgres  prod       5450     staging  5451
+#   MySQL     prod       3350     staging  3351
+#   SQLite               local file — see infra/compare-demo/sqlite/
+#
+# Bring up:   docker compose -f infra/compare-demo/docker-compose.yml up -d
+# Wait for:   docker compose -f infra/compare-demo/docker-compose.yml ps
+# Tear down:  docker compose -f infra/compare-demo/docker-compose.yml down -v
+
+name: dbstudio-compare-demo
+
+services:
+  # ---- Postgres pair -------------------------------------------------
+  pg-prod:
+    image: postgres:16-alpine
+    container_name: dbstudio-cmpdemo-pg-prod
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dbstudio
+      POSTGRES_PASSWORD: dbstudio_demo
+      POSTGRES_DB: shop
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports: ["5450:5432"]
+    volumes:
+      - cmpdemo_pg_prod:/var/lib/postgresql/data
+      - ./seed/pg-prod.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  pg-staging:
+    image: postgres:16-alpine
+    container_name: dbstudio-cmpdemo-pg-staging
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: dbstudio
+      POSTGRES_PASSWORD: dbstudio_demo
+      POSTGRES_DB: shop
+      POSTGRES_INITDB_ARGS: "--encoding=UTF-8 --locale=C"
+    ports: ["5451:5432"]
+    volumes:
+      - cmpdemo_pg_staging:/var/lib/postgresql/data
+      - ./seed/pg-staging.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dbstudio -d shop"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  # ---- MySQL pair ----------------------------------------------------
+  mysql-prod:
+    image: mysql:8.0
+    container_name: dbstudio-cmpdemo-mysql-prod
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: dbstudio_root
+      MYSQL_USER: dbstudio
+      MYSQL_PASSWORD: dbstudio_demo
+      MYSQL_DATABASE: shop
+    ports: ["3350:3306"]
+    volumes:
+      - cmpdemo_mysql_prod:/var/lib/mysql
+      - ./seed/mysql-prod.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udbstudio", "-pdbstudio_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  mysql-staging:
+    image: mysql:8.0
+    container_name: dbstudio-cmpdemo-mysql-staging
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: dbstudio_root
+      MYSQL_USER: dbstudio
+      MYSQL_PASSWORD: dbstudio_demo
+      MYSQL_DATABASE: shop
+    ports: ["3351:3306"]
+    volumes:
+      - cmpdemo_mysql_staging:/var/lib/mysql
+      - ./seed/mysql-staging.sql:/docker-entrypoint-initdb.d/01-seed.sql:ro
+    command:
+      - --default-authentication-plugin=mysql_native_password
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-udbstudio", "-pdbstudio_demo"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+
+  # ---- SQLite file builder ------------------------------------------
+  # SQLite doesn't need a server — this one-shot service uses the
+  # alpine sqlite image to generate two .db files into the mounted
+  # `sqlite/` dir, then exits. Point Bearhold's SQLite connection at
+  # the resulting files.
+  sqlite-builder:
+    image: alpine:3.20
+    container_name: dbstudio-cmpdemo-sqlite-builder
+    restart: "no"
+    working_dir: /work
+    volumes:
+      - ./sqlite:/work/out
+      - ./seed/sqlite-prod.sql:/work/prod.sql:ro
+      - ./seed/sqlite-staging.sql:/work/staging.sql:ro
+    entrypoint:
+      - sh
+      - -c
+      - |
+        set -eu
+        apk add --no-cache sqlite >/dev/null
+        rm -f out/prod.db out/staging.db
+        sqlite3 out/prod.db < prod.sql
+        sqlite3 out/staging.db < staging.sql
+        echo "wrote out/prod.db + out/staging.db"
+
+volumes:
+  cmpdemo_pg_prod:
+  cmpdemo_pg_staging:
+  cmpdemo_mysql_prod:
+  cmpdemo_mysql_staging:

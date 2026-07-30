@@ -505,10 +505,37 @@ function ValueView({ value }: { value: RedisValue }) {
   }
   if (value.kind === 'stream') {
     return (
-      <p className="text-xs text-muted-foreground">
-        Stream values aren&apos;t supported in this browser yet. Use{' '}
-        <code className="font-mono">redis-cli XRANGE</code> for now.
-      </p>
+      <div className="space-y-2">
+        {value.entries.length < value.total && (
+          <TruncationNote shown={value.entries.length} total={value.total} />
+        )}
+        <div className="scrollbar-thin max-h-80 overflow-auto rounded border">
+          <table className="w-full text-xs">
+            <thead className="sticky top-0 bg-muted/80 text-left backdrop-blur">
+              <tr>
+                <th className="px-3 py-1.5 font-medium">Entry ID</th>
+                <th className="px-3 py-1.5 font-medium">Fields</th>
+              </tr>
+            </thead>
+            <tbody>
+              {value.entries.map(([id, fields]) => (
+                <tr key={id} className="border-t align-top">
+                  <td className="whitespace-nowrap px-3 py-1.5 font-mono text-muted-foreground">
+                    {id}
+                  </td>
+                  <td className="px-3 py-1.5 font-mono">
+                    {pairUp(fields).map(([f, v], i) => (
+                      <div key={i}>
+                        <span className="text-muted-foreground">{f}:</span> {v}
+                      </div>
+                    ))}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
     );
   }
   return (
@@ -528,6 +555,15 @@ function TruncationNote({ shown, total }: { shown: number; total: number }) {
 }
 
 // ---- helpers -----------------------------------------------------------
+
+/** Flat [field, value, field, value, ...] → [[field, value], ...]. */
+function pairUp(flat: string[]): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  for (let i = 0; i + 1 < flat.length; i += 2) {
+    out.push([flat[i]!, flat[i + 1]!]);
+  }
+  return out;
+}
 
 function TypeBadge({ type, large }: { type: string; large?: boolean }) {
   // The `unknown` slot is guaranteed to exist (see TYPE_CONFIG below)

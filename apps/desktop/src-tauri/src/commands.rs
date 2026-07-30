@@ -280,6 +280,87 @@ pub async fn mongo_find(
 }
 
 #[tauri::command]
+pub async fn mongo_aggregate(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    pipeline: Vec<serde_json::Value>,
+    limit: Option<u32>,
+) -> CommandResult<FindResponse> {
+    Ok(state
+        .mongo
+        .aggregate(&profile, &database, &collection, pipeline, limit)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_list_indexes(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+) -> CommandResult<Vec<serde_json::Value>> {
+    Ok(state
+        .mongo
+        .list_indexes(&profile, &database, &collection)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_create_index(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    keys: serde_json::Value,
+    unique: bool,
+    name: Option<String>,
+) -> CommandResult<String> {
+    Ok(state
+        .mongo
+        .create_index(&profile, &database, &collection, keys, unique, name)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_drop_index(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    collection: String,
+    index_name: String,
+) -> CommandResult<()> {
+    Ok(state
+        .mongo
+        .drop_index(&profile, &database, &collection, &index_name)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_create_collection(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    name: String,
+) -> CommandResult<()> {
+    Ok(state
+        .mongo
+        .create_collection(&profile, &database, &name)
+        .await?)
+}
+
+#[tauri::command]
+pub async fn mongo_drop_collection(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    database: String,
+    name: String,
+) -> CommandResult<()> {
+    Ok(state.mongo.drop_collection(&profile, &database, &name).await?)
+}
+
+#[tauri::command]
 pub async fn mongo_insert_one(
     state: State<'_, AppState>,
     profile: ConnectionProfile,
@@ -370,6 +451,36 @@ pub async fn redis_delete(
     key: String,
 ) -> CommandResult<u64> {
     Ok(state.redis.delete(&profile, &key).await?)
+}
+
+#[tauri::command]
+pub async fn redis_set_string(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    key: String,
+    value: String,
+) -> CommandResult<()> {
+    Ok(state.redis.set_string(&profile, &key, &value).await?)
+}
+
+#[tauri::command]
+pub async fn redis_set_ttl(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    key: String,
+    ttl_seconds: Option<i64>,
+) -> CommandResult<bool> {
+    Ok(state.redis.set_ttl(&profile, &key, ttl_seconds).await?)
+}
+
+#[tauri::command]
+pub async fn redis_rename(
+    state: State<'_, AppState>,
+    profile: ConnectionProfile,
+    from: String,
+    to: String,
+) -> CommandResult<()> {
+    Ok(state.redis.rename(&profile, &from, &to).await?)
 }
 
 #[tauri::command]
