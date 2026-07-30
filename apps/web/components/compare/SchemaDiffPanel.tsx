@@ -4,7 +4,7 @@
 //
 // Improvements over the old /diff page:
 //   - Auto-compute the moment both connections are picked (with a
-//     small debounce so mid-selection state doesn't spam the linter).
+//     small debounce so mid-selection state doesn't spam the backend).
 //   - Rows are COLLAPSED by default. Users scan the list without
 //     drowning in SQL, then expand only what they want to review.
 //   - Selection checkboxes + a sticky bottom bar with "Apply N".
@@ -22,9 +22,6 @@ import {
   Copy,
   Loader2,
   Play,
-  ShieldAlert,
-  ShieldCheck,
-  ShieldQuestion,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -43,17 +40,6 @@ type LoadState =
   | { kind: 'ok'; source: Schema; target: Schema }
   | { kind: 'error'; code: string; message: string };
 
-type LintOutcome =
-  | { kind: 'ok' }
-  | { kind: 'fail'; error: string }
-  | { kind: 'unverifiable'; reason: string };
-
-type LintState =
-  | { kind: 'idle' }
-  | { kind: 'running' }
-  | { kind: 'ok'; byIndex: Map<number, LintOutcome> }
-  | { kind: 'error'; message: string };
-
 const DESTRUCTIVE_KINDS: DiffChangeKind[] = ['drop-table', 'drop-column', 'drop-index'];
 
 interface Props {
@@ -67,7 +53,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
   const serverInfoBy = useServerInfoCache((s) => s.entries);
 
   const [load, setLoad] = useState<LoadState>({ kind: 'idle' });
-  const [lint, setLint] = useState<LintState>({ kind: 'idle' });
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editedSql, setEditedSql] = useState<Map<number, string>>(new Map());
@@ -137,35 +122,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
     setApplyErrors(new Map());
   }, [changes]);
 
-  // Kick the dry-run linter whenever the change set changes.
-  useEffect(() => {
-    if (!source || changes.length === 0) {
-      setLint({ kind: 'idle' });
-      return;
-    }
-    let cancelled = false;
-    setLint({ kind: 'running' });
-    void api
-      .dryRunStatements(source, changes.map((c) => c.sql))
-      .then((results) => {
-        if (cancelled) return;
-        const byIndex = new Map<number, LintOutcome>();
-        for (const r of results) byIndex.set(r.index, r.outcome);
-        setLint({ kind: 'ok', byIndex });
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return;
-        const err = e as { code?: string; message?: string };
-        setLint({
-          kind: 'error',
-          message: `${err.code ?? 'unknown'} · ${err.message ?? String(e)}`,
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [changes, source?.id]); // eslint-disable-line react-hooks/exhaustive-deps
-
   const kindsInList = useMemo(() => {
     const set = new Set<DiffChangeKind>();
     for (const c of changes) set.add(c.kind);
@@ -180,12 +136,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
   }, [changes, kindFilter]);
 
   const selectedCount = selected.size;
-  const failingSelected = useMemo(() => {
-    if (lint.kind !== 'ok') return 0;
-    let n = 0;
-    for (const i of selected) if (lint.byIndex.get(i)?.kind === 'fail') n++;
-    return n;
-  }, [selected, lint]);
 
   const recordMigration = useMigrationLog((s) => s.record);
 
@@ -352,9 +302,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
             onClick={() => setKindFilter(k)}
           />
         ))}
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
-          <LintSummary lint={lint} />
-        </div>
       </div>
 
       {/* Header row with select-all + expand-all. */}
@@ -398,8 +345,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
             selected={selected.has(index)}
             expanded={expanded.has(index)}
             editedSql={editedSql.get(index)}
-            lintOutcome={lint.kind === 'ok' ? lint.byIndex.get(index) : undefined}
-            lintRunning={lint.kind === 'running'}
             applied={appliedIds.has(index)}
             applyError={applyErrors.get(index) ?? null}
             onToggleSelect={() => {
@@ -425,7 +370,6 @@ export function SchemaDiffPanel({ source, target }: Props) {
 
       <StickyActionBar
         selectedCount={selectedCount}
-        failingSelected={failingSelected}
         applying={applying}
         onApply={applySelected}
         onCopy={copySelected}
@@ -442,8 +386,6 @@ function DiffRow({
   selected,
   expanded,
   editedSql,
-  lintOutcome,
-  lintRunning,
   applied,
   applyError,
   onToggleSelect,
@@ -455,8 +397,6 @@ function DiffRow({
   selected: boolean;
   expanded: boolean;
   editedSql: string | undefined;
-  lintOutcome: LintOutcome | undefined;
-  lintRunning: boolean;
   applied: boolean;
   applyError: string | null;
   onToggleSelect: () => void;
@@ -465,15 +405,13 @@ function DiffRow({
 }) {
   const destructive = DESTRUCTIVE_KINDS.includes(change.kind);
   const sql = editedSql ?? change.sql;
-  const lintFailed = lintOutcome?.kind === 'fail';
   return (
     <li
       className={cn(
         'rounded-lg border transition',
         applied && 'border-emerald-500/40 bg-emerald-500/5',
         !applied && applyError && 'border-destructive/50 bg-destructive/5',
-        !applied && !applyError && lintFailed && 'border-destructive/50 bg-destructive/5',
-        !applied && !applyError && !lintFailed && 'bg-card',
+        !applied && !applyError && 'bg-card',
       )}
     >
       <div className="flex items-center gap-3 px-3 py-2 text-xs">
@@ -508,7 +446,12 @@ function DiffRow({
             {change.kind}
           </span>
         </button>
-        <LintBadge outcome={lintOutcome} running={lintRunning} applied={applied} />
+        {applied && (
+          <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+            <Check className="h-2.5 w-2.5" />
+            Applied
+          </span>
+        )}
       </div>
 
       {expanded && (
@@ -523,17 +466,6 @@ function DiffRow({
             className="scrollbar-thin w-full resize-y rounded border border-input bg-background p-2 font-mono text-[11px]"
             disabled={applied}
           />
-          {lintOutcome?.kind === 'fail' && !applied && (
-            <p className="mt-1.5 text-xs text-destructive">
-              <span className="font-semibold">Server would reject:</span>{' '}
-              <span className="font-mono">{lintOutcome.error}</span>
-            </p>
-          )}
-          {lintOutcome?.kind === 'unverifiable' && !applied && (
-            <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400">
-              {lintOutcome.reason}
-            </p>
-          )}
           {applyError && (
             <p className="mt-1.5 text-xs text-destructive">
               <span className="font-semibold">Apply failed:</span> {applyError}
@@ -547,13 +479,11 @@ function DiffRow({
 
 function StickyActionBar({
   selectedCount,
-  failingSelected,
   applying,
   onApply,
   onCopy,
 }: {
   selectedCount: number;
-  failingSelected: number;
   applying: boolean;
   onApply: () => void;
   onCopy: () => void;
@@ -564,11 +494,6 @@ function StickyActionBar({
       <div className="flex-1 text-sm">
         <span className="font-medium">{selectedCount}</span>{' '}
         <span className="text-muted-foreground">selected</span>
-        {failingSelected > 0 && (
-          <span className="ml-2 text-xs text-destructive">
-            · {failingSelected} would fail lint
-          </span>
-        )}
       </div>
       <Button variant="outline" size="sm" onClick={onCopy}>
         <Copy className="h-3.5 w-3.5" />
@@ -578,7 +503,6 @@ function StickyActionBar({
         size="sm"
         onClick={onApply}
         disabled={applying}
-        className={cn(failingSelected > 0 && 'bg-destructive hover:bg-destructive/90')}
       >
         {applying ? (
           <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -624,86 +548,6 @@ function FilterChip({
       </span>
     </button>
   );
-}
-
-function LintBadge({
-  outcome,
-  running,
-  applied,
-}: {
-  outcome: LintOutcome | undefined;
-  running: boolean;
-  applied: boolean;
-}) {
-  if (applied) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
-        <Check className="h-2.5 w-2.5" />
-        Applied
-      </span>
-    );
-  }
-  if (running || !outcome) {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-muted/60 px-1.5 py-0.5 text-[10px] text-muted-foreground">
-        <Loader2 className="h-2.5 w-2.5 animate-spin" />
-        Checking
-      </span>
-    );
-  }
-  if (outcome.kind === 'ok') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
-        <ShieldCheck className="h-2.5 w-2.5" />
-        Verified
-      </span>
-    );
-  }
-  if (outcome.kind === 'fail') {
-    return (
-      <span className="inline-flex items-center gap-1 rounded bg-destructive/10 px-1.5 py-0.5 text-[10px] text-destructive">
-        <ShieldAlert className="h-2.5 w-2.5" />
-        Would fail
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700 dark:text-amber-400">
-      <ShieldQuestion className="h-2.5 w-2.5" />
-      Unverified
-    </span>
-  );
-}
-
-function LintSummary({ lint }: { lint: LintState }) {
-  if (lint.kind === 'running') {
-    return (
-      <span className="inline-flex items-center gap-1">
-        <Loader2 className="h-3 w-3 animate-spin" />
-        Verifying…
-      </span>
-    );
-  }
-  if (lint.kind === 'ok') {
-    let ok = 0;
-    let fail = 0;
-    let unv = 0;
-    for (const o of lint.byIndex.values()) {
-      if (o.kind === 'ok') ok++;
-      else if (o.kind === 'fail') fail++;
-      else unv++;
-    }
-    return (
-      <>
-        <span className="text-emerald-600">{ok} verified</span>
-        {fail > 0 && <span className="text-destructive">· {fail} failing</span>}
-        {unv > 0 && (
-          <span className="text-amber-600 dark:text-amber-400">· {unv} unverified</span>
-        )}
-      </>
-    );
-  }
-  return null;
 }
 
 function humanKind(k: DiffChangeKind): string {

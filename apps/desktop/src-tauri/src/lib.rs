@@ -1,5 +1,7 @@
 mod commands;
-mod dump;
+// `pub` so the dump round-trip integration tests (tests/dump_roundtrip.rs)
+// can drive run_export/run_import headless against live databases.
+pub mod dump;
 mod state;
 mod tools;
 
@@ -54,7 +56,6 @@ pub fn run() {
             commands::test_connection,
             commands::get_schema,
             commands::get_server_info,
-            commands::dry_run_statements,
             commands::apply_batch,
             commands::run_query,
             commands::set_secret,

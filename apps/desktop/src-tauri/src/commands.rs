@@ -1,7 +1,7 @@
 use dbstudio_core::{
     secrets::{self, Slot},
     server_info::ServerInfo,
-    ssh_tunnel, BatchResult, CellUpdate, ConnectionProfile, DatabaseEngine, DbError, LintResult,
+    ssh_tunnel, BatchResult, CellUpdate, ConnectionProfile, DatabaseEngine, DbError,
     QueryRequest, QueryResult, RowDelete, RowInsert, Schema,
 };
 use serde::Serialize;
@@ -90,23 +90,6 @@ pub async fn get_server_info(
         .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
     let info = driver.server_info(&profile).await?;
     Ok(info)
-}
-
-/// Dry-run a batch of SQL statements without applying them. Used by
-/// the diff and data-diff pages to surface an error badge next to a
-/// generated statement BEFORE the user clicks Apply. See
-/// `Driver::dry_run` for per-engine strategy notes.
-#[tauri::command]
-pub async fn dry_run_statements(
-    state: State<'_, AppState>,
-    profile: ConnectionProfile,
-    statements: Vec<String>,
-) -> CommandResult<Vec<LintResult>> {
-    let driver = state
-        .driver_for(profile.engine)
-        .ok_or_else(|| DbError::Unsupported(format!("engine {:?}", profile.engine)))?;
-    let results = driver.dry_run(&profile, statements).await?;
-    Ok(results)
 }
 
 /// Apply a batch of SQL statements atomically. On PG/SQLite the

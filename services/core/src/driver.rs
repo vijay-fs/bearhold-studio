@@ -64,27 +64,6 @@ pub trait Driver: Send + Sync {
         ))
     }
 
-    /// Dry-run a batch of SQL statements without persisting effects.
-    /// Returns one outcome per input statement. Backends differ in
-    /// what they can verify safely:
-    ///   - PG / SQLite: fully transactional DDL, so the driver
-    ///     BEGINs, runs each statement inside a SAVEPOINT, and rolls
-    ///     back — a true dry-run of any statement.
-    ///   - MySQL: DDL auto-commits, so the driver PREPAREs DDL for
-    ///     syntax check only, and uses EXPLAIN on DML. Some ALTER
-    ///     shapes can't be PREPAREd — those return `Unverifiable`,
-    ///     letting the UI surface a "will validate on Apply" note
-    ///     instead of a false-positive green check.
-    async fn dry_run(
-        &self,
-        _profile: &ConnectionProfile,
-        _statements: Vec<String>,
-    ) -> Result<Vec<LintResult>> {
-        Err(DbError::Unsupported(
-            "dry_run not implemented by this driver".into(),
-        ))
-    }
-
     /// Apply a batch of SQL statements atomically. Opens a SINGLE
     /// connection, wraps everything in `BEGIN` / `COMMIT`, and rolls
     /// back on the first failure. Returns per-statement outcomes so
@@ -108,22 +87,6 @@ pub trait Driver: Send + Sync {
             "apply_batch not implemented by this driver".into(),
         ))
     }
-}
-
-/// Outcome of dry-running one SQL statement. Kept in this crate so
-/// every driver signature agrees without pulling in a UI-tier crate.
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum LintOutcome {
-    Ok,
-    Fail { error: String },
-    Unverifiable { reason: String },
-}
-
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct LintResult {
-    pub index: usize,
-    pub outcome: LintOutcome,
 }
 
 /// Per-statement outcome inside an atomic batch apply.
