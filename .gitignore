@@ -62,4 +62,4 @@ pnpm-debug.log*
 *.pem
 *.key
 !example.key
-infra/*
+infra/*.claude/settings.json
