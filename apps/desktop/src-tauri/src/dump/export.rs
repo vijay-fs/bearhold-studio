@@ -463,20 +463,56 @@ async fn run_sqlite_export(
             Ok(opts.output_path.clone())
         }
         ExportFormat::SqlitePlain => {
-            // sqlite3 <db> .dump — separate binary; wire through
-            // tool_locator so the user can install the bundle if
-            // needed.
             let src = opts.profile.file_path.as_ref().ok_or_else(|| {
                 ExportError::BadOutputPath("SQLite profile has no file_path".into())
             })?;
-            // Skip the locator complexity for now; sqlite3 is almost
-            // always present on macOS/Linux and can be installed via
-            // the bundle later. This branch is a stub — implemented
-            // in the same shape as pg_dump once we wire up the CLI.
-            let _ = src;
-            Err(ExportError::UnsupportedEngine {
-                engine: DatabaseEngine::Sqlite,
-            })
+            let loc = tool_locator::locate(
+                ctx.resource_dir.as_deref(),
+                &ctx.app_data_dir,
+                "sqlite",
+                "sqlite3",
+            )
+            .map_err(|e| ExportError::Locate(e.to_string()))?;
+
+            // Same WAL rationale as the file-copy path: without a
+            // checkpoint the .dump only sees the last-checkpointed
+            // snapshot of a live database.
+            let _ = ctx.sqlite_driver.checkpoint_wal(&opts.profile).await;
+
+            let mut cmd = Command::new(&loc.path);
+            // -bail: stop on the first error instead of continuing
+            // with a silently-partial dump. -readonly: the export
+            // must never mutate the source database.
+            cmd.arg("-bail").arg("-readonly").arg(src);
+            let dot_cmd = match (opts.include_schema, opts.include_data) {
+                (true, false) => ".schema".to_string(),
+                // `.dump --data-only` needs sqlite3 >= 3.32; the
+                // bundled tool satisfies that, and older system
+                // binaries fail loudly rather than mis-dump.
+                (false, true) => {
+                    let mut c = String::from(".dump --data-only");
+                    for t in &opts.tables {
+                        c.push(' ');
+                        c.push_str(t);
+                    }
+                    c
+                }
+                _ => {
+                    let mut c = String::from(".dump");
+                    for t in &opts.tables {
+                        c.push(' ');
+                        c.push_str(t);
+                    }
+                    c
+                }
+            };
+            cmd.arg(dot_cmd);
+
+            // sqlite3 writes the SQL to stdout — redirect to the file.
+            let out_file = std::fs::File::create(&opts.output_path)?;
+            cmd.stdout(Stdio::from(out_file));
+
+            spawn_and_wait(ctx, cmd, sink, &opts.output_path).await
         }
         _ => unreachable!("guarded by ensure_format_matches_engine"),
     }

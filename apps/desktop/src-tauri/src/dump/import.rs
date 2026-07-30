@@ -155,7 +155,7 @@ pub async fn run_import(
     match opts.profile.engine {
         DatabaseEngine::Postgres => run_pg_import(&ctx, &opts, sink).await,
         DatabaseEngine::MySql => run_mysql_import(&ctx, &opts, sink).await,
-        DatabaseEngine::Sqlite => run_sqlite_import(&opts, sink).await,
+        DatabaseEngine::Sqlite => run_sqlite_import(&ctx, &opts, sink).await,
         e => Err(ImportError::UnsupportedEngine { engine: e }),
     }
 }
@@ -387,7 +387,11 @@ async fn write_mysql_creds(profile: &ConnectionProfile) -> Result<PathBuf> {
 
 // ---- SQLite ----------------------------------------------------------
 
-async fn run_sqlite_import(opts: &ImportOptions, sink: Arc<dyn ImportProgressSink>) -> Result<()> {
+async fn run_sqlite_import(
+    ctx: &ImportContext,
+    opts: &ImportOptions,
+    sink: Arc<dyn ImportProgressSink>,
+) -> Result<()> {
     let target = opts
         .profile
         .file_path
@@ -421,9 +425,30 @@ async fn run_sqlite_import(opts: &ImportOptions, sink: Arc<dyn ImportProgressSin
             }
             Ok(())
         }
-        DumpFormat::SqlitePlain => Err(ImportError::UnsupportedEngine {
-            engine: DatabaseEngine::Sqlite,
-        }),
+        DumpFormat::SqlitePlain => {
+            let loc = tool_locator::locate(
+                ctx.resource_dir.as_deref(),
+                &ctx.app_data_dir,
+                "sqlite",
+                "sqlite3",
+            )
+            .map_err(|e| ImportError::Locate(e.to_string()))?;
+
+            let mut cmd = Command::new(&loc.path);
+            if opts.stop_on_error {
+                cmd.arg("-bail");
+            }
+            cmd.arg(target);
+
+            // sqlite3 .dump output already contains BEGIN TRANSACTION /
+            // COMMIT, so single_transaction needs no extra wrapping.
+            // The dump streams over stdin, same as the mysql path.
+            let feed = StdinFeed {
+                path: opts.source_path.clone(),
+                trailer: None,
+            };
+            spawn_and_wait(ctx, cmd, sink, &opts.source_path, Some(feed)).await
+        }
         _ => unreachable!("guarded by ensure_format_matches_engine"),
     }
 }

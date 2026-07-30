@@ -360,3 +360,126 @@ async fn mysql_export_fails_cleanly_without_tool() {
         "unhelpful missing-tool error: {msg}"
     );
 }
+
+#[tokio::test]
+#[ignore = "needs sqlite3 on PATH"]
+async fn sqlite_plain_dump_import_round_trip() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let db_path = tmp.path().join("plain-src.db");
+    std::fs::write(&db_path, b"").expect("touch");
+
+    let profile = ConnectionProfile {
+        id: Uuid::new_v4(),
+        name: "e2e-sqlite-plain".into(),
+        engine: DatabaseEngine::Sqlite,
+        host: String::new(),
+        port: 0,
+        database: String::new(),
+        auth: AuthMethod::None,
+        tls: TlsMode::Prefer,
+        ssh_tunnel: None,
+        options: Default::default(),
+        file_path: Some(db_path.clone()),
+    };
+
+    let driver = dbstudio_driver_sqlite::SqliteDriver::new();
+    driver
+        .execute(
+            &profile,
+            QueryRequest {
+                sql: "CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT);
+                      CREATE INDEX idx_t_v ON t (v);
+                      CREATE VIEW v_t AS SELECT v FROM t;
+                      INSERT INTO t (v) VALUES ('one'), ('it''s two'), (NULL);"
+                    .into(),
+                params: vec![],
+                limit: None,
+                query_id: None,
+            },
+        )
+        .await
+        .expect("seed sqlite");
+
+    let out = tmp.path().join("dump.sql");
+    run_export(
+        ExportContext {
+            app_data_dir: tmp.path().to_path_buf(),
+            resource_dir: None,
+            registry: Arc::new(ExportRegistry::new()),
+            job_id: Uuid::new_v4(),
+            sqlite_driver: Arc::new(driver),
+        },
+        ExportOptions {
+            profile: profile.clone(),
+            output_path: out.clone(),
+            format: ExportFormat::SqlitePlain,
+            include_schema: true,
+            include_data: true,
+            tables: vec![],
+            drop_before_create: false,
+            no_owner: true,
+            single_transaction: true,
+            parallel_jobs: None,
+        },
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("sqlite .dump export");
+
+    let detected = detect::probe(&out).expect("probe").format;
+    assert_eq!(detected, detect::DumpFormat::SqlitePlain, "format sniffing");
+
+    // Import into a brand-new file.
+    let new_db = tmp.path().join("restored.db");
+    std::fs::write(&new_db, b"").expect("touch");
+    let dst_profile = ConnectionProfile {
+        id: Uuid::new_v4(),
+        file_path: Some(new_db),
+        ..profile
+    };
+    run_import(
+        import_ctx(tmp.path()),
+        ImportOptions {
+            profile: dst_profile.clone(),
+            source_path: out,
+            format: detected,
+            single_transaction: true,
+            stop_on_error: true,
+            drop_before_create: false,
+            no_owner: true,
+            parallel_jobs: None,
+        },
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("sqlite .dump import");
+
+    let driver2 = dbstudio_driver_sqlite::SqliteDriver::new();
+    let r = driver2
+        .execute(
+            &dst_profile,
+            QueryRequest {
+                sql: "SELECT COUNT(*) FROM t".into(),
+                params: vec![],
+                limit: None,
+                query_id: None,
+            },
+        )
+        .await
+        .expect("query restored db");
+    assert_eq!(r.rows[0][0].as_i64(), Some(3), "restored row count");
+    // The view must have survived the dump too.
+    let v = driver2
+        .execute(
+            &dst_profile,
+            QueryRequest {
+                sql: "SELECT COUNT(*) FROM v_t WHERE v IS NOT NULL".into(),
+                params: vec![],
+                limit: None,
+                query_id: None,
+            },
+        )
+        .await
+        .expect("query restored view");
+    assert_eq!(v.rows[0][0].as_i64(), Some(2), "view works after restore");
+}
