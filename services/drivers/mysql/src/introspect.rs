@@ -162,17 +162,22 @@ async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
         ),
     >(
         r#"
-        SELECT CONVERT(TABLE_SCHEMA   USING utf8mb4) AS TABLE_SCHEMA,
-               CONVERT(TABLE_NAME     USING utf8mb4) AS TABLE_NAME,
-               CONVERT(COLUMN_NAME    USING utf8mb4) AS COLUMN_NAME,
-               CONVERT(COLUMN_TYPE    USING utf8mb4) AS COLUMN_TYPE,
-               CONVERT(IS_NULLABLE    USING utf8mb4) AS IS_NULLABLE,
-               CONVERT(COLUMN_DEFAULT USING utf8mb4) AS COLUMN_DEFAULT,
-               CONVERT(EXTRA          USING utf8mb4) AS EXTRA,
-               ORDINAL_POSITION
-        FROM information_schema.COLUMNS
-        WHERE TABLE_SCHEMA = ?
-        ORDER BY TABLE_SCHEMA, TABLE_NAME, ORDINAL_POSITION
+        SELECT CONVERT(c.TABLE_SCHEMA   USING utf8mb4) AS TABLE_SCHEMA,
+               CONVERT(c.TABLE_NAME     USING utf8mb4) AS TABLE_NAME,
+               CONVERT(c.COLUMN_NAME    USING utf8mb4) AS COLUMN_NAME,
+               CONVERT(c.COLUMN_TYPE    USING utf8mb4) AS COLUMN_TYPE,
+               CONVERT(c.IS_NULLABLE    USING utf8mb4) AS IS_NULLABLE,
+               CONVERT(c.COLUMN_DEFAULT USING utf8mb4) AS COLUMN_DEFAULT,
+               CONVERT(c.EXTRA          USING utf8mb4) AS EXTRA,
+               c.ORDINAL_POSITION
+        FROM information_schema.COLUMNS c
+        JOIN information_schema.TABLES t
+          ON t.TABLE_SCHEMA = c.TABLE_SCHEMA
+         AND t.TABLE_NAME   = c.TABLE_NAME
+        -- COLUMNS lists view columns too; only BASE TABLEs are tables.
+        WHERE t.TABLE_TYPE = 'BASE TABLE'
+          AND c.TABLE_SCHEMA = ?
+        ORDER BY c.TABLE_SCHEMA, c.TABLE_NAME, c.ORDINAL_POSITION
         "#,
     )
     .bind(db)

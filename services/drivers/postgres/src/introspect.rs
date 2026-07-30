@@ -175,12 +175,19 @@ async fn load_columns(pool: &PgPool) -> Result<Vec<ColumnRow>> {
         ),
     >(
         r#"
-        SELECT table_schema, table_name, column_name, data_type,
-               is_nullable, column_default, ordinal_position,
-               udt_schema, udt_name
-        FROM information_schema.columns
-        WHERE table_schema NOT IN ('pg_catalog', 'information_schema')
-        ORDER BY table_schema, table_name, ordinal_position
+        SELECT c.table_schema, c.table_name, c.column_name, c.data_type,
+               c.is_nullable, c.column_default, c.ordinal_position,
+               c.udt_schema, c.udt_name
+        FROM information_schema.columns c
+        JOIN information_schema.tables t
+          ON t.table_schema = c.table_schema
+         AND t.table_name   = c.table_name
+        -- information_schema.columns lists VIEW columns too; without
+        -- this filter every view is also introspected as a table
+        -- (duplicated in the ER diagram, double-emitted by the diff).
+        WHERE t.table_type = 'BASE TABLE'
+          AND c.table_schema NOT IN ('pg_catalog', 'information_schema')
+        ORDER BY c.table_schema, c.table_name, c.ordinal_position
         "#,
     )
     .fetch_all(pool)
