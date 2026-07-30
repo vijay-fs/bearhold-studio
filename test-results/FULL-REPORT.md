@@ -1,8 +1,8 @@
 # dbstudio — full-flow E2E report
 
-Generated: 2026-07-30T06:28:06.571Z
+Generated: 2026-07-30T07:26:17.842Z
 
-- Passed: 109
+- Passed: 138
 - Failed: 0
 - Known issues: 0
 
@@ -27,6 +27,13 @@ Generated: 2026-07-30T06:28:06.571Z
 | pg12 | schema-diff | drop-column | pass |
 | pg12 | schema-diff | fk-ordered-create | pass |
 | pg12 | schema-diff | hostile-identifiers | pass |
+| pg12 | schema-diff | add-fk-with-actions | pass |
+| pg12 | schema-diff | drop-fk | pass |
+| pg12 | schema-diff | redefine-fk-action | pass |
+| pg12 | schema-diff | create-view | pass |
+| pg12 | schema-diff | drop-view-on-source | pass |
+| pg12 | schema-diff | redefine-view | pass |
+| pg12 | schema-diff | view-blocks-column-drop | pass |
 | pg12 | schema-diff | drop-table-on-source | pass |
 | pg12 | data-diff | diff-shape | pass |
 | pg12 | data-diff | sync-converges | pass |
@@ -47,6 +54,13 @@ Generated: 2026-07-30T06:28:06.571Z
 | pg16 | schema-diff | drop-column | pass |
 | pg16 | schema-diff | fk-ordered-create | pass |
 | pg16 | schema-diff | hostile-identifiers | pass |
+| pg16 | schema-diff | add-fk-with-actions | pass |
+| pg16 | schema-diff | drop-fk | pass |
+| pg16 | schema-diff | redefine-fk-action | pass |
+| pg16 | schema-diff | create-view | pass |
+| pg16 | schema-diff | drop-view-on-source | pass |
+| pg16 | schema-diff | redefine-view | pass |
+| pg16 | schema-diff | view-blocks-column-drop | pass |
 | pg16 | schema-diff | drop-table-on-source | pass |
 | pg16 | data-diff | diff-shape | pass |
 | pg16 | data-diff | sync-converges | pass |
@@ -72,6 +86,12 @@ Generated: 2026-07-30T06:28:06.571Z
 | mysql57 | schema-diff | drop-column | pass |
 | mysql57 | schema-diff | fk-ordered-create | pass |
 | mysql57 | schema-diff | hostile-identifiers | pass |
+| mysql57 | schema-diff | add-fk-with-actions | pass |
+| mysql57 | schema-diff | drop-fk | pass |
+| mysql57 | schema-diff | redefine-fk-action | pass |
+| mysql57 | schema-diff | create-view | pass |
+| mysql57 | schema-diff | drop-view-on-source | pass |
+| mysql57 | schema-diff | redefine-view | pass |
 | mysql57 | schema-diff | drop-table-on-source | pass |
 | mysql57 | data-diff | diff-shape | pass |
 | mysql57 | data-diff | sync-converges | pass |
@@ -97,6 +117,12 @@ Generated: 2026-07-30T06:28:06.571Z
 | mysql80 | schema-diff | drop-column | pass |
 | mysql80 | schema-diff | fk-ordered-create | pass |
 | mysql80 | schema-diff | hostile-identifiers | pass |
+| mysql80 | schema-diff | add-fk-with-actions | pass |
+| mysql80 | schema-diff | drop-fk | pass |
+| mysql80 | schema-diff | redefine-fk-action | pass |
+| mysql80 | schema-diff | create-view | pass |
+| mysql80 | schema-diff | drop-view-on-source | pass |
+| mysql80 | schema-diff | redefine-view | pass |
 | mysql80 | schema-diff | drop-table-on-source | pass |
 | mysql80 | data-diff | diff-shape | pass |
 | mysql80 | data-diff | sync-converges | pass |
@@ -116,6 +142,9 @@ Generated: 2026-07-30T06:28:06.571Z
 | sqlite | schema-diff | drop-column | pass |
 | sqlite | schema-diff | fk-ordered-create | pass |
 | sqlite | schema-diff | hostile-identifiers | pass |
+| sqlite | schema-diff | create-view | pass |
+| sqlite | schema-diff | drop-view-on-source | pass |
+| sqlite | schema-diff | redefine-view | pass |
 | sqlite | schema-diff | drop-table-on-source | pass |
 | sqlite | data-diff | diff-shape | pass |
 | sqlite | data-diff | sync-converges | pass |

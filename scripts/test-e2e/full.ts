@@ -332,11 +332,26 @@ interface KitSchema {
 function schemaOf(profile: Profile, normalizeTo: string): KitSchema {
   const s = kitOk('schema', profile) as KitSchema;
   for (const ns of s.schemas) {
+    const physical = ns.name;
     ns.name = normalizeTo;
     for (const t of ns.tables) {
       t.schema = normalizeTo;
       const fks = (t as { foreign_keys?: Array<{ references_schema: string }> }).foreign_keys ?? [];
       for (const fk of fks) fk.references_schema = normalizeTo;
+    }
+    const views = (ns as { views?: Array<{ schema: string; definition?: string | null }> }).views ?? [];
+    for (const v of views) {
+      v.schema = normalizeTo;
+      // MySQL's VIEW_DEFINITION db-qualifies every table reference
+      // with the physical database name. Rewrite to the common label —
+      // in real usage both sides share the database name, so the
+      // canonical forms match; the harness's e2e_src/e2e_tgt split is
+      // the artifact being corrected here.
+      if (v.definition) {
+        v.definition = v.definition
+          .split('`' + physical + '`.').join('`' + normalizeTo + '`.')
+          .split(physical + '.').join(normalizeTo + '.');
+      }
     }
   }
   return s;
@@ -684,6 +699,72 @@ const SCHEMA_SCENARIOS: SchemaScenario[] = [
         )`,
       ];
     },
+  },
+  {
+    // New FK with a non-default referential action. add-column phase
+    // must precede add-fk phase for this to apply.
+    id: 'add-fk-with-actions',
+    engines: ['mysql', 'postgres'],
+    divergeTarget: () => [
+      `ALTER TABLE orders ADD COLUMN backup_customer_id BIGINT NULL`,
+      `ALTER TABLE orders ADD CONSTRAINT fk_orders_backup FOREIGN KEY (backup_customer_id) REFERENCES customers (id) ON DELETE SET NULL ON UPDATE CASCADE`,
+    ],
+  },
+  {
+    id: 'drop-fk',
+    engines: ['mysql', 'postgres'],
+    divergeTarget: (e) =>
+      e === 'mysql'
+        ? [`ALTER TABLE orders DROP FOREIGN KEY fk_orders_customer`]
+        : [`ALTER TABLE orders DROP CONSTRAINT fk_orders_customer`],
+  },
+  {
+    // Same constraint name, different ON DELETE — must emit drop + add.
+    id: 'redefine-fk-action',
+    engines: ['mysql', 'postgres'],
+    divergeTarget: (e) => [
+      e === 'mysql'
+        ? `ALTER TABLE orders DROP FOREIGN KEY fk_orders_customer`
+        : `ALTER TABLE orders DROP CONSTRAINT fk_orders_customer`,
+      `ALTER TABLE orders ADD CONSTRAINT fk_orders_customer FOREIGN KEY (customer_id) REFERENCES customers (id) ON DELETE CASCADE`,
+    ],
+  },
+  {
+    id: 'create-view',
+    engines: ['mysql', 'postgres', 'sqlite'],
+    divergeTarget: () => [
+      `CREATE VIEW active_customers AS SELECT id, email, full_name FROM customers WHERE status = 'ACTIVE'`,
+    ],
+  },
+  {
+    id: 'drop-view-on-source',
+    engines: ['mysql', 'postgres', 'sqlite'],
+    divergeSource: () => [
+      `CREATE VIEW doomed_view AS SELECT id FROM customers`,
+    ],
+  },
+  {
+    // Redefined view body — becomes drop + create bracketing the batch.
+    id: 'redefine-view',
+    engines: ['mysql', 'postgres', 'sqlite'],
+    divergeSource: () => [
+      `CREATE VIEW active_customers AS SELECT id, email FROM customers WHERE status = 'ACTIVE'`,
+    ],
+    divergeTarget: () => [
+      `CREATE VIEW active_customers AS SELECT id, email, tier FROM customers WHERE status = 'ACTIVE'`,
+    ],
+  },
+  {
+    // A view over a column that's also being dropped: drop-view phase
+    // must run before alter-drop or PG refuses the column drop.
+    id: 'view-blocks-column-drop',
+    engines: ['postgres'],
+    divergeSource: () => [
+      `CREATE VIEW note_view AS SELECT id, note FROM customers`,
+    ],
+    divergeTarget: () => [
+      `ALTER TABLE customers DROP COLUMN note`,
+    ],
   },
   {
     id: 'drop-table-on-source',

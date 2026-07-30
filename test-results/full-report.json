@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-30T06:28:06.570Z",
+  "generatedAt": "2026-07-30T07:26:17.841Z",
   "results": [
     {
       "target": "pg12",
@@ -106,6 +106,48 @@
     {
       "target": "pg12",
       "phase": "schema-diff",
+      "case": "add-fk-with-actions",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "drop-fk",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "redefine-fk-action",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "create-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "drop-view-on-source",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "redefine-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "view-blocks-column-drop",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
       "case": "drop-table-on-source",
       "outcome": "pass"
     },
@@ -221,6 +263,48 @@
       "target": "pg16",
       "phase": "schema-diff",
       "case": "hostile-identifiers",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "add-fk-with-actions",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "drop-fk",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "redefine-fk-action",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "create-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "drop-view-on-source",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "redefine-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "view-blocks-column-drop",
       "outcome": "pass"
     },
     {
@@ -376,6 +460,42 @@
     {
       "target": "mysql57",
       "phase": "schema-diff",
+      "case": "add-fk-with-actions",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "drop-fk",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "redefine-fk-action",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "create-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "drop-view-on-source",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "redefine-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
       "case": "drop-table-on-source",
       "outcome": "pass"
     },
@@ -526,6 +646,42 @@
     {
       "target": "mysql80",
       "phase": "schema-diff",
+      "case": "add-fk-with-actions",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "drop-fk",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "redefine-fk-action",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "create-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "drop-view-on-source",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "redefine-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
       "case": "drop-table-on-source",
       "outcome": "pass"
     },
@@ -635,6 +791,24 @@
       "target": "sqlite",
       "phase": "schema-diff",
       "case": "hostile-identifiers",
+      "outcome": "pass"
+    },
+    {
+      "target": "sqlite",
+      "phase": "schema-diff",
+      "case": "create-view",
+      "outcome": "pass"
+    },
+    {
+      "target": "sqlite",
+      "phase": "schema-diff",
+      "case": "drop-view-on-source",
+      "outcome": "pass"
+    },
+    {
+      "target": "sqlite",
+      "phase": "schema-diff",
+      "case": "redefine-view",
       "outcome": "pass"
     },
     {
