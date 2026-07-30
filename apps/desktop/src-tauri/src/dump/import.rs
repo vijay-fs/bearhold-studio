@@ -111,8 +111,8 @@ pub enum ImportError {
     },
     #[error("job cancelled by user")]
     Cancelled,
-    #[error("this connection uses an SSH tunnel — import runs native CLI tools that can't use it yet, and connecting directly could restore into a different server. Import from a machine with direct access to the database")]
-    SshTunnelUnsupported,
+    #[error("ssh tunnel: {0}")]
+    Tunnel(String),
 }
 
 pub type Result<T> = std::result::Result<T, ImportError>;
@@ -144,13 +144,23 @@ pub async fn run_import(
     }
     ensure_format_matches_engine(opts.format, opts.profile.engine)?;
 
-    // Same guard as export: the native CLIs connect straight to
-    // profile.host with no tunnel, so a tunneled profile could restore
-    // into a DIFFERENT server than the one the app browses. Refuse
-    // loudly. (SQLite is exempt — file-copy import is local.)
-    if opts.profile.ssh_tunnel.is_some() && !matches!(opts.profile.engine, DatabaseEngine::Sqlite) {
-        return Err(ImportError::SshTunnelUnsupported);
-    }
+    // Tunneled profiles: the native CLIs connect straight to
+    // profile.host, so open our own forward and point the CLI at the
+    // local end. The Tunnel must outlive the child process — dropping
+    // it tears the forward down. (SQLite is exempt — file-copy import
+    // is local.)
+    let mut opts = opts;
+    let _tunnel = match (&opts.profile.ssh_tunnel, opts.profile.engine) {
+        (Some(_), DatabaseEngine::Sqlite) | (None, _) => None,
+        (Some(cfg), _) => {
+            let tunnel = crate::dump::open_dump_tunnel(&opts.profile, cfg)
+                .await
+                .map_err(ImportError::Tunnel)?;
+            opts.profile.host = "127.0.0.1".into();
+            opts.profile.port = tunnel.local_port();
+            Some(tunnel)
+        }
+    };
 
     match opts.profile.engine {
         DatabaseEngine::Postgres => run_pg_import(&ctx, &opts, sink).await,

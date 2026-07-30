@@ -483,3 +483,65 @@ async fn sqlite_plain_dump_import_round_trip() {
         .expect("query restored view");
     assert_eq!(v.rows[0][0].as_i64(), Some(2), "view works after restore");
 }
+
+/// Export THROUGH an SSH tunnel: the profile's DB host is the docker
+/// service name `pg16`, resolvable only from inside the compose
+/// network — so a successful dump proves the bytes went through the
+/// bastion, not directly.
+#[tokio::test]
+#[ignore = "needs docker pg16 + bastion (infra/test compose) + pg_dump on PATH"]
+async fn pg_export_through_ssh_tunnel() {
+    use dbstudio_core::{ssh_tunnel, SshAuth, SshTunnel};
+
+    let fingerprint = ssh_tunnel::discover_fingerprint("127.0.0.1", 2222)
+        .await
+        .expect("discover bastion host key");
+
+    // Seed via the direct connection (same server, exposed port).
+    let direct = seed_pg("e2e_tun").await;
+
+    // Tunneled profile: host only the bastion can resolve.
+    let mut tunneled = direct.clone();
+    tunneled.id = Uuid::new_v4();
+    tunneled.host = "pg16".into();
+    tunneled.port = 5432;
+    tunneled.ssh_tunnel = Some(SshTunnel {
+        host: "127.0.0.1".into(),
+        port: 2222,
+        username: "tunnel".into(),
+        auth: SshAuth::Password {
+            password_ref: "tunnel_test".into(),
+        },
+        host_key_fingerprint: Some(fingerprint),
+    });
+
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let out = tmp.path().join("tunneled.sql");
+    let exported = run_export(
+        export_ctx(tmp.path()),
+        ExportOptions {
+            profile: tunneled,
+            output_path: out.clone(),
+            format: ExportFormat::PgPlain,
+            include_schema: true,
+            include_data: true,
+            tables: vec![],
+            drop_before_create: false,
+            no_owner: true,
+            single_transaction: true,
+            parallel_jobs: None,
+        },
+        Arc::new(NullSink),
+    )
+    .await
+    .expect("tunneled export");
+
+    let dump = std::fs::read_to_string(&exported).expect("read dump");
+    assert!(
+        dump.contains("CREATE TABLE") && dump.contains("a@x.com"),
+        "dump through tunnel missing schema or data"
+    );
+
+    let admin = pg_profile("shop");
+    pg_exec(&admin, "DROP DATABASE IF EXISTS e2e_tun").await;
+}

@@ -1,8 +1,8 @@
 # dbstudio — full-flow E2E report
 
-Generated: 2026-07-30T07:26:17.842Z
+Generated: 2026-07-30T07:54:56.059Z
 
-- Passed: 138
+- Passed: 148
 - Failed: 0
 - Known issues: 0
 
@@ -27,6 +27,8 @@ Generated: 2026-07-30T07:26:17.842Z
 | pg12 | schema-diff | drop-column | pass |
 | pg12 | schema-diff | fk-ordered-create | pass |
 | pg12 | schema-diff | hostile-identifiers | pass |
+| pg12 | schema-diff | rename-column-preserves-data | pass |
+| pg12 | schema-diff | rename-ambiguous-stays-drop-add | pass |
 | pg12 | schema-diff | add-fk-with-actions | pass |
 | pg12 | schema-diff | drop-fk | pass |
 | pg12 | schema-diff | redefine-fk-action | pass |
@@ -54,6 +56,8 @@ Generated: 2026-07-30T07:26:17.842Z
 | pg16 | schema-diff | drop-column | pass |
 | pg16 | schema-diff | fk-ordered-create | pass |
 | pg16 | schema-diff | hostile-identifiers | pass |
+| pg16 | schema-diff | rename-column-preserves-data | pass |
+| pg16 | schema-diff | rename-ambiguous-stays-drop-add | pass |
 | pg16 | schema-diff | add-fk-with-actions | pass |
 | pg16 | schema-diff | drop-fk | pass |
 | pg16 | schema-diff | redefine-fk-action | pass |
@@ -86,6 +90,8 @@ Generated: 2026-07-30T07:26:17.842Z
 | mysql57 | schema-diff | drop-column | pass |
 | mysql57 | schema-diff | fk-ordered-create | pass |
 | mysql57 | schema-diff | hostile-identifiers | pass |
+| mysql57 | schema-diff | rename-column-preserves-data | pass |
+| mysql57 | schema-diff | rename-ambiguous-stays-drop-add | pass |
 | mysql57 | schema-diff | add-fk-with-actions | pass |
 | mysql57 | schema-diff | drop-fk | pass |
 | mysql57 | schema-diff | redefine-fk-action | pass |
@@ -117,6 +123,8 @@ Generated: 2026-07-30T07:26:17.842Z
 | mysql80 | schema-diff | drop-column | pass |
 | mysql80 | schema-diff | fk-ordered-create | pass |
 | mysql80 | schema-diff | hostile-identifiers | pass |
+| mysql80 | schema-diff | rename-column-preserves-data | pass |
+| mysql80 | schema-diff | rename-ambiguous-stays-drop-add | pass |
 | mysql80 | schema-diff | add-fk-with-actions | pass |
 | mysql80 | schema-diff | drop-fk | pass |
 | mysql80 | schema-diff | redefine-fk-action | pass |
@@ -142,6 +150,8 @@ Generated: 2026-07-30T07:26:17.842Z
 | sqlite | schema-diff | drop-column | pass |
 | sqlite | schema-diff | fk-ordered-create | pass |
 | sqlite | schema-diff | hostile-identifiers | pass |
+| sqlite | schema-diff | rename-column-preserves-data | pass |
+| sqlite | schema-diff | rename-ambiguous-stays-drop-add | pass |
 | sqlite | schema-diff | create-view | pass |
 | sqlite | schema-diff | drop-view-on-source | pass |
 | sqlite | schema-diff | redefine-view | pass |

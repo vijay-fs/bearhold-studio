@@ -134,8 +134,8 @@ pub enum ExportError {
     Cancelled,
     #[error("locate tool: {0}")]
     Locate(String),
-    #[error("this connection uses an SSH tunnel — export runs native CLI tools that can't use it yet, and connecting directly could dump a different server. Export from a machine with direct access to the database")]
-    SshTunnelUnsupported,
+    #[error("ssh tunnel: {0}")]
+    Tunnel(String),
 }
 
 pub type Result<T> = std::result::Result<T, ExportError>;
@@ -175,15 +175,23 @@ pub async fn run_export(
     // message.
     ensure_format_matches_engine(opts.format, opts.profile.engine)?;
 
-    // The native CLIs connect straight to profile.host — the SSH
-    // tunnel the in-app drivers establish is NOT available here.
-    // Silently ignoring it is dangerous: a tunneled profile whose DB
-    // host is "localhost" would dump whatever Postgres/MySQL happens
-    // to run on the USER's machine, with exit code 0. Refuse loudly.
+    // The native CLIs connect straight to profile.host, so a profile
+    // with an SSH tunnel gets its own tunnel opened here and the CLI
+    // pointed at the local end. The Tunnel value must outlive the
+    // child process — dropping it tears the forward down.
     // (SQLite is exempt — its exports operate on a local file path.)
-    if opts.profile.ssh_tunnel.is_some() && !matches!(opts.profile.engine, DatabaseEngine::Sqlite) {
-        return Err(ExportError::SshTunnelUnsupported);
-    }
+    let mut opts = opts;
+    let _tunnel = match (&opts.profile.ssh_tunnel, opts.profile.engine) {
+        (Some(_), DatabaseEngine::Sqlite) | (None, _) => None,
+        (Some(cfg), _) => {
+            let tunnel = crate::dump::open_dump_tunnel(&opts.profile, cfg)
+                .await
+                .map_err(ExportError::Tunnel)?;
+            opts.profile.host = "127.0.0.1".into();
+            opts.profile.port = tunnel.local_port();
+            Some(tunnel)
+        }
+    };
 
     let result = match opts.profile.engine {
         DatabaseEngine::Postgres => run_pg_dump(&ctx, &opts, sink.clone()).await,

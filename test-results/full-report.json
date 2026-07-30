@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-30T07:26:17.841Z",
+  "generatedAt": "2026-07-30T07:54:56.057Z",
   "results": [
     {
       "target": "pg12",
@@ -106,6 +106,18 @@
     {
       "target": "pg12",
       "phase": "schema-diff",
+      "case": "rename-column-preserves-data",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
+      "case": "rename-ambiguous-stays-drop-add",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg12",
+      "phase": "schema-diff",
       "case": "add-fk-with-actions",
       "outcome": "pass"
     },
@@ -263,6 +275,18 @@
       "target": "pg16",
       "phase": "schema-diff",
       "case": "hostile-identifiers",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "rename-column-preserves-data",
+      "outcome": "pass"
+    },
+    {
+      "target": "pg16",
+      "phase": "schema-diff",
+      "case": "rename-ambiguous-stays-drop-add",
       "outcome": "pass"
     },
     {
@@ -460,6 +484,18 @@
     {
       "target": "mysql57",
       "phase": "schema-diff",
+      "case": "rename-column-preserves-data",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
+      "case": "rename-ambiguous-stays-drop-add",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql57",
+      "phase": "schema-diff",
       "case": "add-fk-with-actions",
       "outcome": "pass"
     },
@@ -646,6 +682,18 @@
     {
       "target": "mysql80",
       "phase": "schema-diff",
+      "case": "rename-column-preserves-data",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
+      "case": "rename-ambiguous-stays-drop-add",
+      "outcome": "pass"
+    },
+    {
+      "target": "mysql80",
+      "phase": "schema-diff",
       "case": "add-fk-with-actions",
       "outcome": "pass"
     },
@@ -791,6 +839,18 @@
       "target": "sqlite",
       "phase": "schema-diff",
       "case": "hostile-identifiers",
+      "outcome": "pass"
+    },
+    {
+      "target": "sqlite",
+      "phase": "schema-diff",
+      "case": "rename-column-preserves-data",
+      "outcome": "pass"
+    },
+    {
+      "target": "sqlite",
+      "phase": "schema-diff",
+      "case": "rename-ambiguous-stays-drop-add",
       "outcome": "pass"
     },
     {

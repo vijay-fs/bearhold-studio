@@ -20,8 +20,61 @@ use self::detect::{probe, DumpProbe};
 use self::export::{run_export, ExportContext, ExportOptions, ExportProgressSink, ExportRegistry};
 use self::import::{run_import, ImportContext, ImportOptions, ImportProgressSink, ImportRegistry};
 
+use dbstudio_core::{
+    secrets::{self, Slot},
+    ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
+    ConnectionProfile, SshAuth,
+};
+
 const EXPORT_PROGRESS_EVENT: &str = "dbstudio://export/progress";
 const IMPORT_PROGRESS_EVENT: &str = "dbstudio://import/progress";
+
+/// Open an SSH tunnel for a dump job, resolving the bastion credential
+/// from the secrets store the same way the query drivers do. The
+/// returned Tunnel keeps the forward alive for as long as it's held.
+pub async fn open_dump_tunnel(
+    profile: &ConnectionProfile,
+    cfg: &dbstudio_core::SshTunnel,
+) -> std::result::Result<Tunnel, String> {
+    let auth = match &cfg.auth {
+        SshAuth::Password { password_ref } => {
+            let pw = if password_ref.is_empty() {
+                secrets::get(profile.id, Slot::SshTunnelPassword)
+                    .await
+                    .map_err(|e| e.to_string())?
+            } else {
+                Some(password_ref.clone())
+            };
+            BastionAuth::Password(pw.ok_or("ssh tunnel password not in keychain")?)
+        }
+        SshAuth::Key {
+            key_ref,
+            passphrase_ref,
+        } => {
+            let passphrase = match passphrase_ref {
+                Some(p) if !p.is_empty() => Some(p.clone()),
+                _ => secrets::get(profile.id, Slot::SshTunnelPassphrase)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            };
+            BastionAuth::Key {
+                path: PathBuf::from(key_ref),
+                passphrase,
+            }
+        }
+    };
+    ssh_tunnel::open(SshTunnelConfig {
+        bastion_host: cfg.host.clone(),
+        bastion_port: cfg.port,
+        username: cfg.username.clone(),
+        auth,
+        target_host: profile.host.clone(),
+        target_port: profile.port,
+        expected_fingerprint: cfg.host_key_fingerprint.clone(),
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
 
 /// Sniff a filesystem path and report what kind of dump we think it
 /// is. See `detect::DumpFormat` for the recognized shapes. Returns
