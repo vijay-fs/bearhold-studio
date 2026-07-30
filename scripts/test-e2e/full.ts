@@ -553,6 +553,9 @@ interface SchemaScenario {
   divergeTarget?: (engine: DatabaseEngine, versionMajor: number) => string[];
   /** SQL run against the SOURCE db (state to migrate away from). */
   divergeSource?: (engine: DatabaseEngine, versionMajor: number) => string[];
+  /** Extra assertion against the SOURCE db after convergence — e.g.
+   *  "the renamed column still holds its data". Throw to fail. */
+  verify?: (src: Profile) => void;
   knownIssue?: string;
 }
 
@@ -701,6 +704,39 @@ const SCHEMA_SCENARIOS: SchemaScenario[] = [
     },
   },
   {
+    // A renamed column must surface as RENAME (data preserved), never
+    // drop + add. Verified by checking a known value survives.
+    id: 'rename-column-preserves-data',
+    engines: ['mysql', 'postgres', 'sqlite'],
+    divergeTarget: (e, vMajor) =>
+      e === 'mysql' && vMajor < 8
+        ? [`ALTER TABLE customers CHANGE COLUMN full_name display_name VARCHAR(255) NOT NULL`]
+        : [`ALTER TABLE customers RENAME COLUMN full_name TO display_name`],
+    verify: (src) => {
+      const v = scalar(src, `SELECT display_name FROM customers WHERE id = 2`);
+      if (v !== "Bob O'Brien") {
+        throw new Error(`rename lost data: display_name(id=2) = ${JSON.stringify(v)}`);
+      }
+    },
+  },
+  {
+    // Two same-signature columns renamed at once is ambiguous — the
+    // diff must NOT guess. It stays drop + add and still converges
+    // (schema-wise; data loss is the documented cost of ambiguity).
+    id: 'rename-ambiguous-stays-drop-add',
+    engines: ['mysql', 'postgres', 'sqlite'],
+    divergeTarget: (e, vMajor) =>
+      e === 'mysql' && vMajor < 8
+        ? [
+            `ALTER TABLE customers CHANGE COLUMN note remark TEXT NULL`,
+            `ALTER TABLE customers CHANGE COLUMN tier plan VARCHAR(16) NULL DEFAULT 'free'`,
+          ]
+        : [
+            `ALTER TABLE customers RENAME COLUMN note TO remark`,
+            `ALTER TABLE customers RENAME COLUMN tier TO plan`,
+          ],
+  },
+  {
     // New FK with a non-default referential action. add-column phase
     // must precede add-fk phase for this to apply.
     id: 'add-fk-with-actions',
@@ -827,6 +863,7 @@ function phaseSchemaDiff(t: SqlTarget) {
           `did not converge — ${after.length} residual change(s): ${after.map((c) => c.label).join('; ')}`,
         );
       }
+      s.verify?.(src);
       record(t.id, 'schema-diff', s.id, 'pass');
     } catch (e) {
       record(t.id, 'schema-diff', s.id, s.knownIssue ? 'known-issue' : 'fail', (e as Error).message);

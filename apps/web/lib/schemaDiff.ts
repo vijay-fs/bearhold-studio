@@ -57,6 +57,7 @@ export type DiffChangeKind =
   | 'drop-column'
   | 'alter-column-type'
   | 'alter-column-nullable'
+  | 'rename-column'
   | 'add-index'
   | 'drop-index'
   | 'add-fk'
@@ -119,6 +120,7 @@ function phaseForKind(k: DiffChangeKind): DiffPhase {
     case 'add-column':
     case 'alter-column-type':
     case 'alter-column-nullable':
+    case 'rename-column':
       return 'alter-add';
     case 'add-index':
       return 'alter-index';
@@ -287,9 +289,48 @@ function diffColumns(
   const sCols = new Map(source.columns.map((c) => [c.name, c]));
   const tCols = new Map(target.columns.map((c) => [c.name, c]));
 
+  // -- Rename detection. A diff has no column identity, so a renamed
+  // -- column normally surfaces as drop + add — which DESTROYS DATA if
+  // -- applied as-is. When exactly one dropped and one added column
+  // -- share a signature (type + nullable + default), pair them into a
+  // -- RENAME instead. Ambiguous cases (two candidates with the same
+  // -- signature) deliberately stay drop + add — guessing wrong on a
+  // -- rename silently moves the wrong data.
+  const added = [...tCols.values()].filter((c) => !sCols.has(c.name));
+  const dropped = [...sCols.values()].filter((c) => !tCols.has(c.name));
+  const renamed = new Map<string, Column>(); // source name → target col
+  if (engine === 'mysql' || caps.renameColumnSyntax) {
+    const bySig = (cols: Column[]) => {
+      const m = new Map<string, Column[]>();
+      for (const c of cols) {
+        const sig = `${c.data_type.toLowerCase()}|${c.nullable}|${c.default ?? ''}`;
+        (m.get(sig) ?? m.set(sig, []).get(sig)!).push(c);
+      }
+      return m;
+    };
+    const addSigs = bySig(added);
+    const dropSigs = bySig(dropped);
+    for (const [sig, adds] of addSigs) {
+      const drops = dropSigs.get(sig);
+      if (adds.length === 1 && drops?.length === 1) {
+        renamed.set(drops[0]!.name, adds[0]!);
+      }
+    }
+  }
+  for (const [from, to] of renamed) {
+    changes.push({
+      kind: 'rename-column',
+      schema: source.schema,
+      table: source.name,
+      label: `Rename column ${from} → ${to.name}`,
+      sql: buildRenameColumn(engine, caps, source.schema, source.name, from, to),
+    });
+  }
+
   for (const [name, tc] of tCols) {
     const sc = sCols.get(name);
     if (!sc) {
+      if ([...renamed.values()].some((c) => c.name === name)) continue;
       changes.push({
         kind: 'add-column',
         schema: source.schema,
@@ -338,6 +379,7 @@ function diffColumns(
 
   for (const [name] of sCols) {
     if (!tCols.has(name)) {
+      if (renamed.has(name)) continue;
       changes.push({
         kind: 'drop-column',
         schema: source.schema,
@@ -749,6 +791,34 @@ function buildAlterColumnNullable(
   return nullable
     ? `ALTER TABLE ${ref} ALTER COLUMN ${colId} DROP NOT NULL;`
     : `ALTER TABLE ${ref} ALTER COLUMN ${colId} SET NOT NULL;`;
+}
+
+/** Engine-correct column rename.
+ *    PG / SQLite 3.25+ / MySQL 8+ →  ALTER TABLE t RENAME COLUMN a TO b
+ *    MySQL 5.7                    →  ALTER TABLE t CHANGE COLUMN a b <full definition>
+ *  CHANGE restates the whole definition (like MODIFY), so the target
+ *  column's type/nullable/default ride along. */
+function buildRenameColumn(
+  engine: DatabaseEngine,
+  caps: ReturnType<typeof capabilities>,
+  schema: string,
+  table: string,
+  from: string,
+  to: Column,
+): string {
+  const style = quoteStyleForEngine(engine);
+  const ref = tableRef(engine, schema, table);
+  if (engine === 'mysql' && !caps.renameColumnSyntax) {
+    const parts = [
+      `ALTER TABLE ${ref} CHANGE COLUMN ${ident(from, style)} ${ident(to.name, style)}`,
+      to.data_type,
+    ];
+    if (!to.nullable) parts.push('NOT NULL');
+    else parts.push('NULL');
+    if (to.default) parts.push(`DEFAULT ${to.default}`);
+    return parts.join(' ') + ';';
+  }
+  return `ALTER TABLE ${ref} RENAME COLUMN ${ident(from, style)} TO ${ident(to.name, style)};`;
 }
 
 function buildCreateIndex(
