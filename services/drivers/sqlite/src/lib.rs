@@ -12,7 +12,7 @@ use dashmap::DashMap;
 use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate, ConnectionProfile,
-    DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, ResultColumn, Result,
+    DbError, Driver, QueryRequest, QueryResult, ResultColumn, Result,
     RowDelete, RowInsert, Schema, Value,
 };
 use sqlx::{
@@ -176,12 +176,7 @@ impl Driver for SqliteDriver {
             ));
         }
 
-        let mut last: Option<QueryResult> = None;
-        for stmt in &statements {
-            last = Some(run_single(&pool, stmt, limit).await?);
-        }
-
-        let mut out = last.expect("at least one statement");
+        let mut out = run_script(pool, statements, limit).await?;
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
     }
@@ -308,43 +303,6 @@ impl Driver for SqliteDriver {
         Ok(())
     }
 
-    async fn dry_run(
-        &self,
-        profile: &ConnectionProfile,
-        statements: Vec<String>,
-    ) -> Result<Vec<LintResult>> {
-        let pool = self.pool_for(profile).await?;
-        let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
-        let mut out = Vec::with_capacity(statements.len());
-        for (index, sql) in statements.iter().enumerate() {
-            let sp = format!("bearhold_lint_{index}");
-            sqlx::query(&format!("SAVEPOINT {sp}"))
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_error)?;
-            let outcome = match sqlx::query(sql).execute(&mut *tx).await {
-                Ok(_) => {
-                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(map_sqlx_error)?;
-                    LintOutcome::Ok
-                }
-                Err(e) => {
-                    let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
-                        .execute(&mut *tx)
-                        .await;
-                    LintOutcome::Fail {
-                        error: format!("{e}"),
-                    }
-                }
-            };
-            out.push(LintResult { index, outcome });
-        }
-        let _ = tx.rollback().await;
-        Ok(out)
-    }
-
     async fn apply_batch(
         &self,
         profile: &ConnectionProfile,
@@ -433,54 +391,71 @@ fn push_sqlite_value(q: &mut QueryBuilder<'_, Sqlite>, v: &Value) {
     }
 }
 
-async fn run_single(pool: &SqlitePool, sql: &str, limit: usize) -> Result<QueryResult> {
-    if !is_query_statement(sql) {
-        let result = sqlx::query(sql)
-            .execute(pool)
-            .await
-            .map_err(map_sqlx_error)?;
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: Some(result.rows_affected()),
-            elapsed_ms: 0,
-            truncated: false,
-        });
-    }
+/// Run a split script on ONE pinned pool connection. Transactions
+/// (BEGIN ... COMMIT), temp tables and PRAGMA settings are all
+/// connection-scoped — executing each statement against the pool may
+/// hop connections and silently break them.
+///
+/// Kept as a free fn with owned arguments, loop inlined: borrowing the
+/// connection from inside the async-trait method (or from a helper fn)
+/// trips rustc #102211 ("implementation of `Executor` is not general
+/// enough").
+async fn run_script(pool: SqlitePool, statements: Vec<String>, limit: usize) -> Result<QueryResult> {
+    let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
 
-    let sqlite_rows = sqlx::query(sql)
-        .fetch_all(pool)
-        .await
-        .map_err(map_sqlx_error)?;
+    let mut last: Option<QueryResult> = None;
+    for stmt in &statements {
+        let sql = stmt.as_str();
+        let result = if !is_query_statement(sql) {
+            let res = sqlx::query(sql)
+                .execute(&mut *conn)
+                .await
+                .map_err(map_sqlx_error)?;
+            QueryResult {
+                columns: vec![],
+                rows: vec![],
+                rows_affected: Some(res.rows_affected()),
+                elapsed_ms: 0,
+                truncated: false,
+            }
+        } else {
+            let sqlite_rows = sqlx::query(sql)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(map_sqlx_error)?;
 
-    let columns: Vec<ResultColumn> = sqlite_rows
-        .first()
-        .map(|r| {
-            r.columns()
-                .iter()
-                .map(|c| ResultColumn {
-                    name: c.name().to_string(),
-                    data_type: c.type_info().name().to_string(),
+            let columns: Vec<ResultColumn> = sqlite_rows
+                .first()
+                .map(|r| {
+                    r.columns()
+                        .iter()
+                        .map(|c| ResultColumn {
+                            name: c.name().to_string(),
+                            data_type: c.type_info().name().to_string(),
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .unwrap_or_default();
 
-    let truncated = sqlite_rows.len() > limit;
-    let mut rows = Vec::with_capacity(sqlite_rows.len().min(limit));
-    for row in sqlite_rows.iter().take(limit) {
-        let mut cells = Vec::with_capacity(row.columns().len());
-        for (i, col) in row.columns().iter().enumerate() {
-            cells.push(decode::decode_cell(row, i, col.type_info().name()));
-        }
-        rows.push(cells);
+            let truncated = sqlite_rows.len() > limit;
+            let mut rows = Vec::with_capacity(sqlite_rows.len().min(limit));
+            for row in sqlite_rows.iter().take(limit) {
+                let mut cells = Vec::with_capacity(row.columns().len());
+                for (i, col) in row.columns().iter().enumerate() {
+                    cells.push(decode::decode_cell(row, i, col.type_info().name()));
+                }
+                rows.push(cells);
+            }
+
+            QueryResult {
+                columns,
+                rows,
+                rows_affected: None,
+                elapsed_ms: 0,
+                truncated,
+            }
+        };
+        last = Some(result);
     }
-
-    Ok(QueryResult {
-        columns,
-        rows,
-        rows_affected: None,
-        elapsed_ms: 0,
-        truncated,
-    })
+    last.ok_or_else(|| DbError::InvalidInput("no SQL statement to execute".to_string()))
 }

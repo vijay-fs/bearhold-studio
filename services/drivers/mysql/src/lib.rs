@@ -15,12 +15,12 @@ use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
     AuthMethod, BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate,
-    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, Result,
+    ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, Result,
     ResultColumn, RowDelete, RowInsert, Schema, SshAuth, TlsMode, Value,
 };
 use sqlx::{
     mysql::{MySql, MySqlPool, MySqlPoolOptions},
-    Column, QueryBuilder, Row, TypeInfo,
+    Column, Executor, QueryBuilder, Row, TypeInfo,
 };
 use tracing::info;
 use uuid::Uuid;
@@ -60,29 +60,21 @@ impl MySqlDriver {
             (profile.host.clone(), profile.port)
         };
 
-        let url = build_connection_url(profile, &host, port).await?;
-        let pool = MySqlPoolOptions::new()
-            // Keep the pool tight. We're a single-user desktop app
-            // talking to MySQL servers that often run with strict
-            // `max_connections` caps (cheap managed instances cap
-            // at 10–30; shared servers even less). Two connections
-            // covers the realistic concurrency — one for the active
-            // query, one for the sibling `KILL QUERY` route — and
-            // leaves headroom for other clients on the same server.
-            // Users who want more can hand-edit; the default has to
-            // be the smallest workable value.
-            .max_connections(2)
-            // Start empty. sqlx defaults `min_connections` to 0
-            // already but we set it explicitly so a future default
-            // change doesn't quietly pre-warm connections.
-            .min_connections(0)
-            .acquire_timeout(std::time::Duration::from_secs(10))
-            // See the matching note in the Postgres driver.
-            .test_before_acquire(true)
-            .idle_timeout(Some(std::time::Duration::from_secs(300)))
-            .connect(&url)
-            .await
-            .map_err(map_sqlx_error)?;
+        let url = build_connection_url(profile, &host, port, None).await?;
+        let pool = match connect_pool(&url).await {
+            Ok(pool) => pool,
+            // Real PREFERRED semantics: when the server advertises TLS
+            // but the handshake fails (MySQL 5.7's yaSSL only offers
+            // CBC cipher suites that rustls refuses), fall back to
+            // plaintext — exactly what libmysqlclient does. Only for
+            // Prefer: Require/VerifyCa/VerifyFull must hard-fail.
+            Err(e) if matches!(profile.tls, TlsMode::Prefer) && is_tls_handshake_error(&e) => {
+                info!("TLS handshake failed under ssl-mode=PREFERRED; retrying without TLS");
+                let url = build_connection_url(profile, &host, port, Some("DISABLED")).await?;
+                connect_pool(&url).await.map_err(map_sqlx_error)?
+            }
+            Err(e) => return Err(map_sqlx_error(e)),
+        };
 
         self.pools.insert(profile.id, pool.clone());
         Ok(pool)
@@ -147,10 +139,46 @@ impl Default for MySqlDriver {
     }
 }
 
+async fn connect_pool(url: &str) -> std::result::Result<MySqlPool, sqlx::Error> {
+    MySqlPoolOptions::new()
+        // Keep the pool tight. We're a single-user desktop app
+        // talking to MySQL servers that often run with strict
+        // `max_connections` caps (cheap managed instances cap
+        // at 10–30; shared servers even less). Two connections
+        // covers the realistic concurrency — one for the active
+        // query, one for the sibling `KILL QUERY` route — and
+        // leaves headroom for other clients on the same server.
+        // Users who want more can hand-edit; the default has to
+        // be the smallest workable value.
+        .max_connections(2)
+        // Start empty. sqlx defaults `min_connections` to 0
+        // already but we set it explicitly so a future default
+        // change doesn't quietly pre-warm connections.
+        .min_connections(0)
+        .acquire_timeout(std::time::Duration::from_secs(10))
+        // See the matching note in the Postgres driver.
+        .test_before_acquire(true)
+        .idle_timeout(Some(std::time::Duration::from_secs(300)))
+        .connect(url)
+        .await
+}
+
+/// True when a connect error is a TLS-negotiation failure (as opposed
+/// to auth, network, or protocol errors). Used only to implement the
+/// plaintext fallback for `TlsMode::Prefer`.
+fn is_tls_handshake_error(e: &sqlx::Error) -> bool {
+    if matches!(e, sqlx::Error::Tls(_)) {
+        return true;
+    }
+    let msg = e.to_string().to_ascii_lowercase();
+    msg.contains("handshake") || msg.contains("fatal alert") || msg.contains("tls")
+}
+
 async fn build_connection_url(
     profile: &ConnectionProfile,
     host: &str,
     port: u16,
+    ssl_mode_override: Option<&str>,
 ) -> Result<String> {
     let (username, password) = match &profile.auth {
         AuthMethod::Password {
@@ -194,13 +222,13 @@ async fn build_connection_url(
     // and silently falls back to plaintext — so a profile configured
     // as `verify_full` got neither verification nor a guaranteed
     // encrypted channel.
-    let ssl_mode = match profile.tls {
+    let ssl_mode = ssl_mode_override.unwrap_or(match profile.tls {
         TlsMode::Disable => "DISABLED",
         TlsMode::Prefer => "PREFERRED",
         TlsMode::Require => "REQUIRED",
         TlsMode::VerifyCa => "VERIFY_CA",
         TlsMode::VerifyFull => "VERIFY_IDENTITY",
-    };
+    });
     url.query_pairs_mut().append_pair("ssl-mode", ssl_mode);
     Ok(url.into())
 }
@@ -340,12 +368,18 @@ impl Driver for MySqlDriver {
             ));
         }
 
-        let mut last: Option<QueryResult> = None;
-        for stmt in &statements {
-            last = Some(run_single(&pool, stmt, limit, req.query_id, &self.query_conn_ids).await?);
-        }
-
-        let mut out = last.expect("at least one statement");
+        // Delegated to a free fn with owned arguments — borrowing the
+        // connection inside this async-trait method trips rustc
+        // #102211 ("implementation of `Executor` is not general
+        // enough").
+        let mut out = run_script(
+            pool,
+            statements,
+            limit,
+            req.query_id,
+            self.query_conn_ids.clone(),
+        )
+        .await?;
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
     }
@@ -477,60 +511,6 @@ impl Driver for MySqlDriver {
         Ok(())
     }
 
-    async fn dry_run(
-        &self,
-        profile: &ConnectionProfile,
-        statements: Vec<String>,
-    ) -> Result<Vec<LintResult>> {
-        // MySQL DDL implicit-commits, so BEGIN/ROLLBACK
-        // WON'T undo an ALTER. Two strategies by statement kind:
-        //   - DDL: PREPARE for syntax check only (no execution). Not
-        //     every ALTER shape supports PREPARE — those return
-        //     Unverifiable so the UI shows "will validate on Apply".
-        //   - DML: EXPLAIN. Fully parses + plans without executing
-        //     the write. Real dry-run for INSERT/UPDATE/DELETE.
-        let pool = self.pool_for(profile).await?;
-        let mut out = Vec::with_capacity(statements.len());
-        for (index, sql) in statements.iter().enumerate() {
-            let outcome = if is_ddl_statement(sql) {
-                let probe = format!(
-                    "PREPARE bearhold_lint_probe FROM {}",
-                    mysql_string_literal(sql)
-                );
-                match sqlx::query(&probe).execute(&pool).await {
-                    Ok(_) => {
-                        let _ = sqlx::query("DEALLOCATE PREPARE bearhold_lint_probe")
-                            .execute(&pool)
-                            .await;
-                        LintOutcome::Ok
-                    }
-                    Err(e) => {
-                        let msg = e.to_string();
-                        if looks_like_hard_error(&msg) {
-                            LintOutcome::Fail { error: msg }
-                        } else {
-                            LintOutcome::Unverifiable {
-                                reason:
-                                    "MySQL cannot fully dry-run this DDL. It will be validated when you click Apply."
-                                        .into(),
-                            }
-                        }
-                    }
-                }
-            } else {
-                let probe = format!("EXPLAIN {sql}");
-                match sqlx::query(&probe).execute(&pool).await {
-                    Ok(_) => LintOutcome::Ok,
-                    Err(e) => LintOutcome::Fail {
-                        error: e.to_string(),
-                    },
-                }
-            };
-            out.push(LintResult { index, outcome });
-        }
-        Ok(out)
-    }
-
     async fn apply_batch(
         &self,
         profile: &ConnectionProfile,
@@ -658,35 +638,19 @@ fn is_ddl_statement(sql: &str) -> bool {
     )
 }
 
-fn mysql_string_literal(s: &str) -> String {
-    // For the PREPARE probe. Backslash + single-quote escaping — this
-    // is our own SQL we control, so we don't need sql_mode-aware
-    // NO_BACKSLASH_ESCAPES handling.
-    let escaped = s.replace('\\', "\\\\").replace('\'', "\\'");
-    format!("'{escaped}'")
-}
-
-fn looks_like_hard_error(msg: &str) -> bool {
-    let lower = msg.to_ascii_lowercase();
-    lower.contains("syntax")
-        || lower.contains("1064")
-        || lower.contains("unknown column")
-        || lower.contains("unknown table")
-        || lower.contains("doesn't exist")
-        || lower.contains("does not exist")
-}
-
-async fn run_single(
-    pool: &MySqlPool,
-    sql: &str,
+/// Run a split script on ONE pinned pool connection. Transactions
+/// (START TRANSACTION ... COMMIT), temporary tables, session variables
+/// and ROW_COUNT() are all session-scoped — running each statement on
+/// a different pooled connection silently breaks every one of them.
+/// Pinning also makes the registered CONNECTION_ID() valid for the
+/// full script, so Stop (KILL QUERY) works past the first statement.
+async fn run_script(
+    pool: MySqlPool,
+    statements: Vec<String>,
     limit: usize,
     query_id: Option<Uuid>,
-    query_conn_ids: &Arc<DashMap<Uuid, u64>>,
+    registry: Arc<DashMap<Uuid, u64>>,
 ) -> Result<QueryResult> {
-    // Pin one pool connection for the lifetime of this statement so the
-    // CONNECTION_ID() we look up corresponds to the connection that
-    // actually executes the user's query — and so a sibling `KILL QUERY`
-    // hits the right thread.
     let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
 
     if let Some(qid) = query_id {
@@ -694,62 +658,72 @@ async fn run_single(
             .fetch_one(&mut *conn)
             .await
             .map_err(map_sqlx_error)?;
-        query_conn_ids.insert(qid, conn_id);
+        registry.insert(qid, conn_id);
     }
     let _guard = MysqlQueryIdGuard {
-        registry: query_conn_ids,
+        registry: &registry,
         qid: query_id,
     };
 
-    if !is_query_statement(sql) {
-        let result = sqlx::query(sql)
-            .execute(&mut *conn)
-            .await
-            .map_err(map_sqlx_error)?;
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: Some(result.rows_affected()),
-            elapsed_ms: 0,
-            truncated: false,
-        });
-    }
+    // Statements run over the TEXT protocol (`Executor` methods on a
+    // plain `&str`), NOT the prepared-statement protocol. User-typed
+    // SQL has no bind parameters, and MySQL refuses to PREPARE many
+    // legitimate statements (START TRANSACTION, USE, LOCK TABLES, ...)
+    // with error 1295. The text protocol runs anything the server
+    // accepts — same as the mysql CLI.
+    //
+    // NOTE: keep this loop inline. Extracting it into a helper that
+    // borrows the connection trips rustc #102211 ("implementation of
+    // `Executor` is not general enough").
+    let mut last: Option<QueryResult> = None;
+    for stmt in &statements {
+        let sql = stmt.as_str();
+        let result = if !is_query_statement(sql) {
+            let res = (&mut *conn).execute(sql).await.map_err(map_sqlx_error)?;
+            QueryResult {
+                columns: vec![],
+                rows: vec![],
+                rows_affected: Some(res.rows_affected()),
+                elapsed_ms: 0,
+                truncated: false,
+            }
+        } else {
+            let mysql_rows = (&mut *conn).fetch_all(sql).await.map_err(map_sqlx_error)?;
 
-    let mysql_rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(map_sqlx_error)?;
-
-    let columns: Vec<ResultColumn> = mysql_rows
-        .first()
-        .map(|r| {
-            r.columns()
-                .iter()
-                .map(|c| ResultColumn {
-                    name: c.name().to_string(),
-                    data_type: c.type_info().name().to_string(),
+            let columns: Vec<ResultColumn> = mysql_rows
+                .first()
+                .map(|r| {
+                    r.columns()
+                        .iter()
+                        .map(|c| ResultColumn {
+                            name: c.name().to_string(),
+                            data_type: c.type_info().name().to_string(),
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .unwrap_or_default();
 
-    let truncated = mysql_rows.len() > limit;
-    let mut rows = Vec::with_capacity(mysql_rows.len().min(limit));
-    for row in mysql_rows.iter().take(limit) {
-        let mut cells = Vec::with_capacity(row.columns().len());
-        for (i, col) in row.columns().iter().enumerate() {
-            cells.push(decode::decode_cell(row, i, col.type_info().name()));
-        }
-        rows.push(cells);
+            let truncated = mysql_rows.len() > limit;
+            let mut rows = Vec::with_capacity(mysql_rows.len().min(limit));
+            for row in mysql_rows.iter().take(limit) {
+                let mut cells = Vec::with_capacity(row.columns().len());
+                for (i, col) in row.columns().iter().enumerate() {
+                    cells.push(decode::decode_cell(row, i, col.type_info().name()));
+                }
+                rows.push(cells);
+            }
+
+            QueryResult {
+                columns,
+                rows,
+                rows_affected: None,
+                elapsed_ms: 0,
+                truncated,
+            }
+        };
+        last = Some(result);
     }
-
-    Ok(QueryResult {
-        columns,
-        rows,
-        rows_affected: None,
-        elapsed_ms: 0,
-        truncated,
-    })
+    last.ok_or_else(|| DbError::InvalidInput("no SQL statement to execute".to_string()))
 }
 
 /// Drop guard mirroring the PG side — removes the (query_id, connection_id)

@@ -15,7 +15,7 @@ use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
     AuthMethod, BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate,
-    ConnectionProfile, DbError, Driver, LintOutcome, LintResult, QueryRequest, QueryResult, Result,
+    ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, Result,
     ResultColumn, RowDelete, RowInsert, Schema, SshAuth, TlsMode, Value,
 };
 use sqlx::{
@@ -157,18 +157,24 @@ impl Default for PostgresDriver {
     }
 }
 
-async fn run_single(
-    pool: &PgPool,
-    sql: &str,
+/// Run a split script on ONE pinned pool connection. Transactions
+/// (BEGIN ... COMMIT), temporary tables, SET session variables and
+/// advisory locks are all session-scoped — running each statement on a
+/// different pooled connection silently breaks every one of them.
+/// Pinning also makes the registered backend PID valid for the full
+/// script, so Stop (pg_cancel_backend) works past the first statement.
+///
+/// Kept as a free fn with owned arguments, loop inlined: borrowing the
+/// connection from inside the async-trait method (or from a helper fn)
+/// trips rustc #102211 ("implementation of `Executor` is not general
+/// enough").
+async fn run_script(
+    pool: PgPool,
+    statements: Vec<String>,
     limit: usize,
     query_id: Option<Uuid>,
-    query_pids: &Arc<DashMap<Uuid, i32>>,
+    registry: Arc<DashMap<Uuid, i32>>,
 ) -> Result<QueryResult> {
-    // Pin a connection from the pool for the lifetime of this statement so
-    // (a) the backend PID we look up corresponds to the connection that
-    // will actually run the query, and (b) `pg_cancel_backend` from a
-    // sibling task hits the right backend. Without pinning, sqlx may
-    // acquire+release a different connection per call.
     let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
 
     // Register the backend PID against the caller's query_id so a
@@ -181,62 +187,75 @@ async fn run_single(
             .fetch_one(&mut *conn)
             .await
             .map_err(map_sqlx_error)?;
-        query_pids.insert(qid, pid);
+        registry.insert(qid, pid);
     }
     let _guard = QueryIdGuard {
-        registry: query_pids,
+        registry: &registry,
         qid: query_id,
     };
 
-    if !is_query_statement(sql) {
-        let result = sqlx::query(sql)
-            .execute(&mut *conn)
-            .await
-            .map_err(map_sqlx_error)?;
-        return Ok(QueryResult {
-            columns: vec![],
-            rows: vec![],
-            rows_affected: Some(result.rows_affected()),
-            elapsed_ms: 0,
-            truncated: false,
-        });
-    }
+    let mut last: Option<QueryResult> = None;
+    for stmt in &statements {
+        let sql = stmt.as_str();
+        // `.persistent(false)` — ad-hoc user SQL must not be cached as
+        // a named server-side prepared statement. A cached SELECT plan
+        // re-run after an ALTER TABLE on the same session fails with
+        // "cached plan must not change result type"; the unnamed
+        // statement is re-planned per execution and immune to that.
+        let result = if !is_query_statement(sql) {
+            let res = sqlx::query(sql)
+                .persistent(false)
+                .execute(&mut *conn)
+                .await
+                .map_err(map_sqlx_error)?;
+            QueryResult {
+                columns: vec![],
+                rows: vec![],
+                rows_affected: Some(res.rows_affected()),
+                elapsed_ms: 0,
+                truncated: false,
+            }
+        } else {
+            let pg_rows = sqlx::query(sql)
+                .persistent(false)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(map_sqlx_error)?;
 
-    let pg_rows = sqlx::query(sql)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(map_sqlx_error)?;
-
-    let columns: Vec<ResultColumn> = pg_rows
-        .first()
-        .map(|r| {
-            r.columns()
-                .iter()
-                .map(|c| ResultColumn {
-                    name: c.name().to_string(),
-                    data_type: c.type_info().name().to_string(),
+            let columns: Vec<ResultColumn> = pg_rows
+                .first()
+                .map(|r| {
+                    r.columns()
+                        .iter()
+                        .map(|c| ResultColumn {
+                            name: c.name().to_string(),
+                            data_type: c.type_info().name().to_string(),
+                        })
+                        .collect()
                 })
-                .collect()
-        })
-        .unwrap_or_default();
+                .unwrap_or_default();
 
-    let truncated = pg_rows.len() > limit;
-    let mut rows = Vec::with_capacity(pg_rows.len().min(limit));
-    for row in pg_rows.iter().take(limit) {
-        let mut cells = Vec::with_capacity(row.columns().len());
-        for (i, col) in row.columns().iter().enumerate() {
-            cells.push(decode::decode_cell(row, i, col.type_info().name()));
-        }
-        rows.push(cells);
+            let truncated = pg_rows.len() > limit;
+            let mut rows = Vec::with_capacity(pg_rows.len().min(limit));
+            for row in pg_rows.iter().take(limit) {
+                let mut cells = Vec::with_capacity(row.columns().len());
+                for (i, col) in row.columns().iter().enumerate() {
+                    cells.push(decode::decode_cell(row, i, col.type_info().name()));
+                }
+                rows.push(cells);
+            }
+
+            QueryResult {
+                columns,
+                rows,
+                rows_affected: None,
+                elapsed_ms: 0,
+                truncated,
+            }
+        };
+        last = Some(result);
     }
-
-    Ok(QueryResult {
-        columns,
-        rows,
-        rows_affected: None,
-        elapsed_ms: 0,
-        truncated,
-    })
+    last.ok_or_else(|| DbError::InvalidInput("no SQL statement to execute".to_string()))
 }
 
 /// Removes the (query_id, pid) registration when the statement exits,
@@ -496,12 +515,14 @@ impl Driver for PostgresDriver {
             ));
         }
 
-        let mut last: Option<QueryResult> = None;
-        for stmt in &statements {
-            last = Some(run_single(&pool, stmt, limit, req.query_id, &self.query_pids).await?);
-        }
-
-        let mut out = last.expect("at least one statement");
+        let mut out = run_script(
+            pool,
+            statements,
+            limit,
+            req.query_id,
+            self.query_pids.clone(),
+        )
+        .await?;
         out.elapsed_ms = started.elapsed().as_millis() as u64;
         Ok(out)
     }
@@ -629,48 +650,6 @@ impl Driver for PostgresDriver {
         // through it.
         self.tunnels.remove(&profile.id);
         Ok(())
-    }
-
-    async fn dry_run(
-        &self,
-        profile: &ConnectionProfile,
-        statements: Vec<String>,
-    ) -> Result<Vec<LintResult>> {
-        let pool = self.pool_for(profile).await?;
-        let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
-        let mut out = Vec::with_capacity(statements.len());
-        for (index, sql) in statements.iter().enumerate() {
-            // Savepoint per statement so a rejected one doesn't
-            // taint the outer transaction — subsequent lints still
-            // run against a clean state.
-            let sp = format!("bearhold_lint_{index}");
-            sqlx::query(&format!("SAVEPOINT {sp}"))
-                .execute(&mut *tx)
-                .await
-                .map_err(map_sqlx_error)?;
-            let outcome = match sqlx::query(sql).execute(&mut *tx).await {
-                Ok(_) => {
-                    sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
-                        .execute(&mut *tx)
-                        .await
-                        .map_err(map_sqlx_error)?;
-                    LintOutcome::Ok
-                }
-                Err(e) => {
-                    let _ = sqlx::query(&format!("ROLLBACK TO SAVEPOINT {sp}"))
-                        .execute(&mut *tx)
-                        .await;
-                    LintOutcome::Fail {
-                        error: format!("{e}"),
-                    }
-                }
-            };
-            out.push(LintResult { index, outcome });
-        }
-        // Outer rollback: everything is unwound already, but this
-        // catches any escaped savepoint state.
-        let _ = tx.rollback().await;
-        Ok(out)
     }
 
     async fn apply_batch(
