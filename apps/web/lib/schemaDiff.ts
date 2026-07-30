@@ -16,9 +16,12 @@
 
 import type {
   Column,
+  ForeignKey,
   Index,
+  RefAction,
   Schema,
   Table,
+  View,
 } from '@dbstudio/erd';
 
 import type { DatabaseEngine } from './types';
@@ -55,7 +58,11 @@ export type DiffChangeKind =
   | 'alter-column-type'
   | 'alter-column-nullable'
   | 'add-index'
-  | 'drop-index';
+  | 'drop-index'
+  | 'add-fk'
+  | 'drop-fk'
+  | 'create-view'
+  | 'drop-view';
 
 /** Phase groups the change into a coarse "when does it run" bucket.
  *  Ordering rule inside a single Apply batch:
@@ -71,9 +78,13 @@ export type DiffChangeKind =
  *  they reference; drops go the other way. This is what stops the
  *  "delete on products violates FK on order_items" class of error. */
 export type DiffPhase =
+  | 'drop-view'
+  | 'drop-fk'
   | 'create'
   | 'alter-add'
   | 'alter-index'
+  | 'add-fk'
+  | 'create-view'
   | 'drop-index'
   | 'alter-drop'
   | 'drop';
@@ -95,6 +106,14 @@ export interface DiffChange {
 
 function phaseForKind(k: DiffChangeKind): DiffPhase {
   switch (k) {
+    // Views drop FIRST: Postgres refuses to drop columns/tables a view
+    // still references, and a redefined view (drop + create pair)
+    // must release the old definition before table shapes change.
+    case 'drop-view':
+      return 'drop-view';
+    // FKs drop before any index/column/table they depend on leaves.
+    case 'drop-fk':
+      return 'drop-fk';
     case 'create-table':
       return 'create';
     case 'add-column':
@@ -103,6 +122,13 @@ function phaseForKind(k: DiffChangeKind): DiffPhase {
       return 'alter-add';
     case 'add-index':
       return 'alter-index';
+    // FKs attach after tables, columns and (for MySQL) indexes exist.
+    case 'add-fk':
+      return 'add-fk';
+    // Views (re)create last among additive changes — every table and
+    // column they reference exists by now.
+    case 'create-view':
+      return 'create-view';
     case 'drop-index':
       return 'drop-index';
     case 'drop-column':
@@ -113,12 +139,16 @@ function phaseForKind(k: DiffChangeKind): DiffPhase {
 }
 
 const PHASE_RANK: Record<DiffPhase, number> = {
-  create: 0,
-  'alter-add': 1,
-  'alter-index': 2,
-  'drop-index': 3,
-  'alter-drop': 4,
-  drop: 5,
+  'drop-view': 0,
+  'drop-fk': 1,
+  create: 2,
+  'alter-add': 3,
+  'alter-index': 4,
+  'add-fk': 5,
+  'create-view': 6,
+  'drop-index': 7,
+  'alter-drop': 8,
+  drop: 9,
 };
 
 interface DiffOptions {
@@ -168,7 +198,10 @@ export function diffSchemas(
     if (!st) continue;
     diffColumns(engine, caps, st, tt, raw);
     diffIndexes(engine, caps, st, tt, raw);
+    diffForeignKeys(engine, st, tt, raw);
   }
+
+  diffViews(engine, source, target, raw);
 
   // -- DROP TABLE for every table in source but not target. Drops go
   // -- last so any FKs that referenced this table from a dropped or
@@ -358,6 +391,189 @@ function diffIndexes(
   }
 }
 
+/** FK diffing. Compared by constraint name; a same-named FK whose
+ *  shape (columns, referenced table/columns, ON DELETE / ON UPDATE)
+ *  differs is redefined as drop + add — phase ordering guarantees the
+ *  drop lands first.
+ *
+ *  SQLite is excluded entirely: it cannot ALTER foreign keys (a table
+ *  rebuild is required), so emitting DDL here would only produce
+ *  guaranteed-failing statements. */
+function diffForeignKeys(
+  engine: DatabaseEngine,
+  source: Table,
+  target: Table,
+  changes: RawChange[],
+): void {
+  if (engine === 'sqlite') return;
+  const style = quoteStyleForEngine(engine);
+  const sFks = new Map(source.foreign_keys.map((f) => [f.name, f]));
+  const tFks = new Map(target.foreign_keys.map((f) => [f.name, f]));
+
+  const dropFk = (name: string) => {
+    const keyword = engine === 'mysql' ? 'FOREIGN KEY' : 'CONSTRAINT';
+    changes.push({
+      kind: 'drop-fk',
+      schema: source.schema,
+      table: source.name,
+      label: `Drop foreign key ${name}`,
+      sql: `ALTER TABLE ${tableRef(engine, source.schema, source.name)} DROP ${keyword} ${ident(name, style)};`,
+    });
+  };
+  const addFk = (fk: ForeignKey) => {
+    changes.push({
+      kind: 'add-fk',
+      schema: source.schema,
+      table: source.name,
+      label: `Add foreign key ${fk.name}`,
+      sql:
+        `ALTER TABLE ${tableRef(engine, source.schema, source.name)} ADD CONSTRAINT ${ident(fk.name, style)} ` +
+        foreignKeyClause(engine, fk) +
+        ';',
+    });
+  };
+
+  for (const [name, tf] of tFks) {
+    const sf = sFks.get(name);
+    if (!sf) {
+      addFk(tf);
+    } else if (fkSignature(sf) !== fkSignature(tf)) {
+      dropFk(name);
+      addFk(tf);
+    }
+  }
+  for (const [name] of sFks) {
+    if (!tFks.has(name)) dropFk(name);
+  }
+}
+
+function fkSignature(fk: ForeignKey): string {
+  return JSON.stringify([
+    fk.columns,
+    fk.references_schema,
+    fk.references_table,
+    fk.references_columns,
+    fk.on_delete ?? 'no_action',
+    fk.on_update ?? 'no_action',
+  ]);
+}
+
+function refActionSql(action: RefAction): string {
+  switch (action) {
+    case 'no_action':
+      return 'NO ACTION';
+    case 'restrict':
+      return 'RESTRICT';
+    case 'cascade':
+      return 'CASCADE';
+    case 'set_null':
+      return 'SET NULL';
+    case 'set_default':
+      return 'SET DEFAULT';
+  }
+}
+
+function foreignKeyClause(engine: DatabaseEngine, fk: ForeignKey): string {
+  const style = quoteStyleForEngine(engine);
+  let clause =
+    'FOREIGN KEY (' +
+    fk.columns.map((c) => ident(c, style)).join(', ') +
+    ') REFERENCES ' +
+    tableRef(engine, fk.references_schema, fk.references_table) +
+    ' (' +
+    fk.references_columns.map((c) => ident(c, style)).join(', ') +
+    ')';
+  // NO ACTION is every engine's default — emitting it would make the
+  // diff noisier without changing behavior.
+  if (fk.on_delete && fk.on_delete !== 'no_action') {
+    clause += ` ON DELETE ${refActionSql(fk.on_delete)}`;
+  }
+  if (fk.on_update && fk.on_update !== 'no_action') {
+    clause += ` ON UPDATE ${refActionSql(fk.on_update)}`;
+  }
+  return clause;
+}
+
+/** View diffing: presence by name, redefinition by normalized
+ *  definition text. A changed view becomes drop + create — the two
+ *  phases bracket every table change, so a view can be rebuilt on top
+ *  of columns that are themselves added in the same batch.
+ *
+ *  Definition comparison is engine-honest: both sides come from the
+ *  same engine's canonical form (pg_get_viewdef / VIEW_DEFINITION /
+ *  sqlite_master.sql), so whitespace-insensitive equality is
+ *  reliable. When either side has no stored definition we only diff
+ *  presence — never guess at a body we can't see. */
+function diffViews(
+  engine: DatabaseEngine,
+  source: Schema,
+  target: Schema,
+  changes: RawChange[],
+): void {
+  const sViews = indexViews(source);
+  const tViews = indexViews(target);
+
+  const dropView = (v: View) => {
+    changes.push({
+      kind: 'drop-view',
+      schema: v.schema,
+      table: v.name,
+      label: `Drop view ${v.name}`,
+      sql: `DROP VIEW ${tableRef(engine, v.schema, v.name)};`,
+    });
+  };
+  const createView = (v: View) => {
+    changes.push({
+      kind: 'create-view',
+      schema: v.schema,
+      table: v.name,
+      label: `Create view ${v.name}`,
+      sql: buildCreateView(engine, v),
+    });
+  };
+
+  for (const [key, tv] of tViews) {
+    const sv = sViews.get(key);
+    if (!sv) {
+      if (tv.definition) createView(tv);
+      continue;
+    }
+    if (
+      sv.definition &&
+      tv.definition &&
+      normalizeViewDef(sv.definition) !== normalizeViewDef(tv.definition)
+    ) {
+      dropView(sv);
+      createView(tv);
+    }
+  }
+  for (const [key, sv] of sViews) {
+    if (!tViews.has(key)) dropView(sv);
+  }
+}
+
+function indexViews(schema: Schema): Map<string, View> {
+  const out = new Map<string, View>();
+  for (const ns of schema.schemas) {
+    for (const v of ns.views) out.set(tableKey(v.schema, v.name), v);
+  }
+  return out;
+}
+
+function normalizeViewDef(def: string): string {
+  return def.trim().replace(/;\s*$/, '').replace(/\s+/g, ' ');
+}
+
+function buildCreateView(engine: DatabaseEngine, v: View): string {
+  const def = (v.definition ?? '').trim().replace(/;\s*$/, '');
+  // SQLite stores the complete CREATE VIEW statement in sqlite_master;
+  // PG and MySQL store only the SELECT body.
+  if (/^\s*CREATE\b/i.test(def)) {
+    return `${def};`;
+  }
+  return `CREATE VIEW ${tableRef(engine, v.schema, v.name)} AS ${def};`;
+}
+
 /** Engine-correct `DROP INDEX`. The previous version used a bare
  *  index name for every engine, which is wrong two different ways:
  *
@@ -437,17 +653,7 @@ function buildCreateTable(engine: DatabaseEngine, t: Table): string {
   // single, copy-pastable block — easier to review and edit before
   // applying.
   for (const fk of t.foreign_keys) {
-    lines.push(
-      '  CONSTRAINT ' +
-        ident(fk.name, style) +
-        ' FOREIGN KEY (' +
-        fk.columns.map((c) => ident(c, style)).join(', ') +
-        ') REFERENCES ' +
-        tableRef(engine, fk.references_schema, fk.references_table) +
-        ' (' +
-        fk.references_columns.map((c) => ident(c, style)).join(', ') +
-        ')',
-    );
+    lines.push('  CONSTRAINT ' + ident(fk.name, style) + ' ' + foreignKeyClause(engine, fk));
   }
   return `CREATE TABLE ${tableRef(engine, t.schema, t.name)} (\n${lines.join(',\n')}\n);`;
 }

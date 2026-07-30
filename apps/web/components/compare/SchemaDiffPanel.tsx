@@ -40,7 +40,13 @@ type LoadState =
   | { kind: 'ok'; source: Schema; target: Schema }
   | { kind: 'error'; code: string; message: string };
 
-const DESTRUCTIVE_KINDS: DiffChangeKind[] = ['drop-table', 'drop-column', 'drop-index'];
+const DESTRUCTIVE_KINDS: DiffChangeKind[] = [
+  'drop-table',
+  'drop-column',
+  'drop-index',
+  'drop-fk',
+  'drop-view',
+];
 
 interface Props {
   source: ConnectionProfile | undefined;
