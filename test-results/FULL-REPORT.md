@@ -1,8 +1,8 @@
 # dbstudio — full-flow E2E report
 
-Generated: 2026-07-30T07:54:56.059Z
+Generated: 2026-07-30T18:28:33.321Z
 
-- Passed: 148
+- Passed: 86
 - Failed: 0
 - Known issues: 0
 
@@ -10,35 +10,6 @@ Generated: 2026-07-30T07:54:56.059Z
 
 | Target | Phase | Case | Outcome |
 |---|---|---|---|
-| pg12 | driver | txn-commit-spans-statements | pass |
-| pg12 | driver | txn-rollback-spans-statements | pass |
-| pg12 | driver | temp-table-spans-statements | pass |
-| pg12 | driver | cte-window-join | pass |
-| pg12 | driver | multi-statement-returns-last | pass |
-| pg12 | driver | error-surfaces | pass |
-| pg12 | driver | ddl-then-reselect | pass |
-| pg12 | driver | utility-statements | pass |
-| pg12 | driver | apply-batch-failure-shape | pass |
-| pg12 | driver | create-drop-database | pass |
-| pg12 | schema-diff | create-table-enum-defaults | pass |
-| pg12 | schema-diff | add-columns-json-and-string-default | pass |
-| pg12 | schema-diff | add-indexes | pass |
-| pg12 | schema-diff | drop-plain-index | pass |
-| pg12 | schema-diff | drop-column | pass |
-| pg12 | schema-diff | fk-ordered-create | pass |
-| pg12 | schema-diff | hostile-identifiers | pass |
-| pg12 | schema-diff | rename-column-preserves-data | pass |
-| pg12 | schema-diff | rename-ambiguous-stays-drop-add | pass |
-| pg12 | schema-diff | add-fk-with-actions | pass |
-| pg12 | schema-diff | drop-fk | pass |
-| pg12 | schema-diff | redefine-fk-action | pass |
-| pg12 | schema-diff | create-view | pass |
-| pg12 | schema-diff | drop-view-on-source | pass |
-| pg12 | schema-diff | redefine-view | pass |
-| pg12 | schema-diff | view-blocks-column-drop | pass |
-| pg12 | schema-diff | drop-table-on-source | pass |
-| pg12 | data-diff | diff-shape | pass |
-| pg12 | data-diff | sync-converges | pass |
 | pg16 | driver | txn-commit-spans-statements | pass |
 | pg16 | driver | txn-rollback-spans-statements | pass |
 | pg16 | driver | temp-table-spans-statements | pass |
@@ -68,39 +39,6 @@ Generated: 2026-07-30T07:54:56.059Z
 | pg16 | schema-diff | drop-table-on-source | pass |
 | pg16 | data-diff | diff-shape | pass |
 | pg16 | data-diff | sync-converges | pass |
-| mysql57 | driver | txn-commit-spans-statements | pass |
-| mysql57 | driver | txn-rollback-spans-statements | pass |
-| mysql57 | driver | temp-table-spans-statements | pass |
-| mysql57 | driver | session-vars-prepare-execute | pass |
-| mysql57 | driver | start-transaction-not-preparable-1295 | pass |
-| mysql57 | driver | row-count-and-temp-table-backfill | pass |
-| mysql57 | driver | cte-window-join | pass |
-| mysql57 | driver | multi-statement-returns-last | pass |
-| mysql57 | driver | error-surfaces | pass |
-| mysql57 | driver | ddl-then-reselect | pass |
-| mysql57 | driver | utility-statements | pass |
-| mysql57 | driver | apply-batch-failure-shape | pass |
-| mysql57 | driver | create-drop-database | pass |
-| mysql57 | schema-diff | create-table-enum-defaults | pass |
-| mysql57 | schema-diff | add-columns-json-and-string-default | pass |
-| mysql57 | schema-diff | widen-enum-keep-default | pass |
-| mysql57 | schema-diff | add-indexes | pass |
-| mysql57 | schema-diff | drop-plain-index | pass |
-| mysql57 | schema-diff | drop-fk-backing-index | pass |
-| mysql57 | schema-diff | drop-column | pass |
-| mysql57 | schema-diff | fk-ordered-create | pass |
-| mysql57 | schema-diff | hostile-identifiers | pass |
-| mysql57 | schema-diff | rename-column-preserves-data | pass |
-| mysql57 | schema-diff | rename-ambiguous-stays-drop-add | pass |
-| mysql57 | schema-diff | add-fk-with-actions | pass |
-| mysql57 | schema-diff | drop-fk | pass |
-| mysql57 | schema-diff | redefine-fk-action | pass |
-| mysql57 | schema-diff | create-view | pass |
-| mysql57 | schema-diff | drop-view-on-source | pass |
-| mysql57 | schema-diff | redefine-view | pass |
-| mysql57 | schema-diff | drop-table-on-source | pass |
-| mysql57 | data-diff | diff-shape | pass |
-| mysql57 | data-diff | sync-converges | pass |
 | mysql80 | driver | txn-commit-spans-statements | pass |
 | mysql80 | driver | txn-rollback-spans-statements | pass |
 | mysql80 | driver | temp-table-spans-statements | pass |

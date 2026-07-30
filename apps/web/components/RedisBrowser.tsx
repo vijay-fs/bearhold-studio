@@ -294,8 +294,13 @@ export function RedisBrowser({ profile }: RedisBrowserProps) {
         )}
         {selectedKey && details.kind === 'ok' && (
           <KeyDetailsView
+            profile={profile}
             details={details.data}
             onDelete={() => setPendingDelete(details.data.key)}
+            onRenamed={(newKey) => {
+              setSelectedKey(newKey);
+              void restartScan(pattern);
+            }}
             onRefresh={() => {
               // Re-fetch by re-setting the selection. The useEffect
               // above does the heavy lifting.
@@ -347,29 +352,157 @@ export function RedisBrowser({ profile }: RedisBrowserProps) {
 // ---- key details view --------------------------------------------------
 
 function KeyDetailsView({
+  profile,
   details,
   onDelete,
+  onRenamed,
   onRefresh,
 }: {
+  profile: ConnectionProfile;
   details: RedisKeyDetails;
   onDelete: () => void;
+  onRenamed: (newKey: string) => void;
   onRefresh: () => void;
 }) {
+  const [renaming, setRenaming] = useState(false);
+  const [renameTo, setRenameTo] = useState(details.key);
+  const [editingTtl, setEditingTtl] = useState(false);
+  const [ttlInput, setTtlInput] = useState('');
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const run = async (op: () => Promise<unknown>, after?: () => void) => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await op();
+      after?.();
+    } catch (e) {
+      const err = e as { message?: string };
+      setActionError(err.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const hasExpiry =
+    details.ttl_seconds != null && details.ttl_seconds !== -1 && details.ttl_seconds !== -2;
+
   return (
     <div className="flex h-full flex-col">
       <header className="flex items-start justify-between gap-3 border-b px-4 py-2.5">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <TypeBadge type={details.type_name} large />
-            <span className="truncate font-mono text-sm font-semibold">{details.key}</span>
-          </div>
-          <div className="mt-1 flex items-center gap-3 text-[11px] text-muted-foreground">
-            {details.ttl_seconds == null || details.ttl_seconds === -1 ? (
-              <span>no expiry</span>
-            ) : details.ttl_seconds === -2 ? (
-              <span className="text-destructive">key missing</span>
+            {renaming ? (
+              <form
+                className="flex flex-1 items-center gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const to = renameTo.trim();
+                  if (!to || to === details.key) {
+                    setRenaming(false);
+                    return;
+                  }
+                  void run(
+                    () => api.redis.rename(profile, details.key, to),
+                    () => {
+                      setRenaming(false);
+                      onRenamed(to);
+                    },
+                  );
+                }}
+              >
+                <input
+                  value={renameTo}
+                  onChange={(e) => setRenameTo(e.target.value)}
+                  autoFocus
+                  spellCheck={false}
+                  className="w-full rounded border border-input bg-background px-2 py-0.5 font-mono text-sm"
+                />
+                <Button size="sm" type="submit" disabled={busy}>
+                  Rename
+                </Button>
+                <Button size="sm" type="button" variant="ghost" onClick={() => setRenaming(false)}>
+                  Cancel
+                </Button>
+              </form>
             ) : (
-              <span>expires in {formatTtl(details.ttl_seconds)}</span>
+              <button
+                type="button"
+                title="Rename key"
+                onClick={() => {
+                  setRenameTo(details.key);
+                  setRenaming(true);
+                }}
+                className="truncate text-left font-mono text-sm font-semibold hover:underline"
+              >
+                {details.key}
+              </button>
+            )}
+          </div>
+          <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+            {editingTtl ? (
+              <form
+                className="flex items-center gap-1.5"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const secs = Number(ttlInput);
+                  if (!Number.isFinite(secs) || secs <= 0) return;
+                  void run(
+                    () => api.redis.setTtl(profile, details.key, Math.floor(secs)),
+                    () => {
+                      setEditingTtl(false);
+                      onRefresh();
+                    },
+                  );
+                }}
+              >
+                <input
+                  value={ttlInput}
+                  onChange={(e) => setTtlInput(e.target.value)}
+                  autoFocus
+                  placeholder="seconds"
+                  inputMode="numeric"
+                  className="w-24 rounded border border-input bg-background px-1.5 py-0.5 font-mono"
+                />
+                <button type="submit" disabled={busy} className="hover:text-foreground">
+                  set
+                </button>
+                <button type="button" onClick={() => setEditingTtl(false)} className="hover:text-foreground">
+                  cancel
+                </button>
+              </form>
+            ) : (
+              <>
+                {details.ttl_seconds === -2 ? (
+                  <span className="text-destructive">key missing</span>
+                ) : hasExpiry ? (
+                  <span>expires in {formatTtl(details.ttl_seconds!)}</span>
+                ) : (
+                  <span>no expiry</span>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTtlInput(hasExpiry ? String(details.ttl_seconds) : '');
+                    setEditingTtl(true);
+                  }}
+                  className="hover:text-foreground hover:underline"
+                >
+                  set TTL
+                </button>
+                {hasExpiry && (
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void run(() => api.redis.setTtl(profile, details.key, null), onRefresh)}
+                    className="hover:text-foreground hover:underline"
+                  >
+                    remove expiry
+                  </button>
+                )}
+              </>
             )}
             <span>·</span>
             <span>type {details.type_name}</span>
@@ -389,26 +522,37 @@ function KeyDetailsView({
         </div>
       </header>
 
+      {actionError && (
+        <p className="border-b bg-destructive/5 px-4 py-1.5 text-xs text-destructive">{actionError}</p>
+      )}
+
       <div className="flex-1 overflow-auto p-4">
-        <ValueView value={details.value} />
+        <ValueView
+          value={details.value}
+          onSaveString={(next) =>
+            void run(() => api.redis.setString(profile, details.key, next), onRefresh)
+          }
+          busy={busy}
+        />
       </div>
     </div>
   );
 }
 
-function ValueView({ value }: { value: RedisValue }) {
+function ValueView({
+  value,
+  onSaveString,
+  busy,
+}: {
+  value: RedisValue;
+  onSaveString: (next: string) => void;
+  busy: boolean;
+}) {
   if (value.kind === 'none') {
     return <p className="text-xs text-muted-foreground">Key has no value (it may have just expired).</p>;
   }
   if (value.kind === 'string') {
-    return (
-      <textarea
-        readOnly
-        value={value.value}
-        spellCheck={false}
-        className="scrollbar-thin h-full min-h-[200px] w-full resize-none rounded border border-input bg-muted/20 p-3 font-mono text-xs"
-      />
-    );
+    return <StringEditor initial={value.value} onSave={onSaveString} busy={busy} />;
   }
   if (value.kind === 'list') {
     return (
@@ -551,6 +695,42 @@ function TruncationNote({ shown, total }: { shown: number; total: number }) {
       Showing first {shown.toLocaleString()} of {total.toLocaleString()} — values
       past this aren&apos;t loaded in the MVP.
     </p>
+  );
+}
+
+/** Editable string value with an explicit Save — silent live writes to
+ *  a production Redis are exactly the surprise nobody wants. */
+function StringEditor({
+  initial,
+  onSave,
+  busy,
+}: {
+  initial: string;
+  onSave: (next: string) => void;
+  busy: boolean;
+}) {
+  const [draft, setDraft] = useState(initial);
+  useEffect(() => setDraft(initial), [initial]);
+  const dirty = draft !== initial;
+  return (
+    <div className="flex h-full flex-col gap-2">
+      <textarea
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        spellCheck={false}
+        className="scrollbar-thin min-h-[200px] w-full flex-1 resize-none rounded border border-input bg-background p-3 font-mono text-xs"
+      />
+      {dirty && (
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={() => onSave(draft)} disabled={busy}>
+            Save value
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => setDraft(initial)} disabled={busy}>
+            Discard
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
