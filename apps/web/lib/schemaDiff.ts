@@ -416,6 +416,12 @@ function buildCreateTable(engine: DatabaseEngine, t: Table): string {
   for (const c of t.columns) {
     const parts = [ident(c.name, style), c.data_type];
     if (!c.nullable) parts.push('NOT NULL');
+    // MySQL: a TIMESTAMP column without an explicit NULL is implicitly
+    // NOT NULL DEFAULT '0000-00-00 00:00:00' (5.7 default sql_mode
+    // then rejects its own implicit default with error 1067). Emitting
+    // NULL for every nullable column is valid on all MySQL versions
+    // and defuses the trap.
+    else if (engine === 'mysql') parts.push('NULL');
     if (c.default) parts.push(`DEFAULT ${c.default}`);
     lines.push('  ' + parts.join(' '));
   }
@@ -462,6 +468,9 @@ function buildAddColumn(
     c.data_type,
   ];
   if (!c.nullable) parts.push('NOT NULL');
+  // See buildCreateTable: explicit NULL defuses MySQL's implicit
+  // NOT-NULL-with-zero-default behavior on TIMESTAMP columns.
+  else if (engine === 'mysql') parts.push('NULL');
   if (c.default) parts.push(`DEFAULT ${c.default}`);
   return parts.join(' ') + ';';
 }

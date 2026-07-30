@@ -148,7 +148,19 @@ struct ColumnRow {
 async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
     // information_schema text columns are returned as VARBINARY on MySQL 8+,
     // which sqlx can't decode into String. Force a text conversion via CONVERT.
-    let rows = sqlx::query_as::<_, (String, String, String, String, String, Option<String>, u32)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            u32,
+        ),
+    >(
         r#"
         SELECT CONVERT(TABLE_SCHEMA   USING utf8mb4) AS TABLE_SCHEMA,
                CONVERT(TABLE_NAME     USING utf8mb4) AS TABLE_NAME,
@@ -156,6 +168,7 @@ async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
                CONVERT(COLUMN_TYPE    USING utf8mb4) AS COLUMN_TYPE,
                CONVERT(IS_NULLABLE    USING utf8mb4) AS IS_NULLABLE,
                CONVERT(COLUMN_DEFAULT USING utf8mb4) AS COLUMN_DEFAULT,
+               CONVERT(EXTRA          USING utf8mb4) AS EXTRA,
                ORDINAL_POSITION
         FROM information_schema.COLUMNS
         WHERE TABLE_SCHEMA = ?
@@ -170,17 +183,108 @@ async fn load_columns(pool: &MySqlPool, db: &str) -> Result<Vec<ColumnRow>> {
     Ok(rows
         .into_iter()
         .map(
-            |(schema, table, name, data_type, is_nullable, default, position)| ColumnRow {
-                schema,
-                table,
-                name,
-                data_type,
-                nullable: is_nullable == "YES",
-                default,
-                position,
+            |(schema, table, name, data_type, is_nullable, default, extra, position)| {
+                let default = normalize_default(default.as_deref(), &data_type, &extra);
+                ColumnRow {
+                    schema,
+                    table,
+                    name,
+                    data_type,
+                    nullable: is_nullable == "YES",
+                    default,
+                    position,
+                }
             },
         )
         .collect())
+}
+
+/// MySQL reports `COLUMN_DEFAULT` as the *raw value*, not as SQL: a
+/// `varchar` defaulting to the text `abc` comes back as `abc`, and an
+/// `enum` defaulting to `RESERVED` comes back as `RESERVED`. Postgres,
+/// by contrast, reports an already-quoted SQL expression. Every DDL
+/// generator downstream (schema diff, create-table, column editor)
+/// splices `default` straight into `DEFAULT <x>`, so the raw MySQL form
+/// produces `DEFAULT RESERVED` — a 1064 syntax error.
+///
+/// Normalize here so `Column::default` always holds a SQL expression,
+/// consistent across engines.
+fn normalize_default(default: Option<&str>, column_type: &str, extra: &str) -> Option<String> {
+    let raw = default?;
+
+    // `NULL` and the datetime keyword defaults are expressions, not
+    // values, and MySQL reports them verbatim. Checked before EXTRA
+    // because `TIMESTAMP DEFAULT CURRENT_TIMESTAMP` is flagged
+    // DEFAULT_GENERATED on MySQL 8 yet must not be re-emitted in the
+    // parenthesized expression form.
+    if is_keyword_default(raw) {
+        return Some(raw.to_string());
+    }
+
+    // MySQL 8.0.13+ expression defaults. COLUMN_DEFAULT stores the
+    // expression without its outer parens, which `DEFAULT` requires.
+    if extra.to_ascii_uppercase().contains("DEFAULT_GENERATED") {
+        return Some(format!("({raw})"));
+    }
+
+    if is_numeric_type(column_type) {
+        return Some(raw.to_string());
+    }
+
+    Some(quote_string_literal(raw))
+}
+
+fn is_keyword_default(raw: &str) -> bool {
+    let upper = raw.trim().to_ascii_uppercase();
+    if matches!(
+        upper.as_str(),
+        "NULL" | "CURRENT_DATE" | "CURRENT_TIME" | "LOCALTIME" | "LOCALTIMESTAMP" | "NOW()"
+    ) {
+        return true;
+    }
+    // CURRENT_TIMESTAMP, plus the fractional-seconds form CURRENT_TIMESTAMP(3).
+    upper == "CURRENT_TIMESTAMP"
+        || (upper.starts_with("CURRENT_TIMESTAMP(")
+            && upper.ends_with(')')
+            && upper["CURRENT_TIMESTAMP(".len()..upper.len() - 1]
+                .chars()
+                .all(|c| c.is_ascii_digit()))
+}
+
+fn is_numeric_type(column_type: &str) -> bool {
+    // COLUMN_TYPE carries display width and modifiers ("bigint(20) unsigned"),
+    // so match on the leading base-type token.
+    let base = column_type
+        .trim()
+        .to_ascii_lowercase()
+        .split(['(', ' '])
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    matches!(
+        base.as_str(),
+        "tinyint"
+            | "smallint"
+            | "mediumint"
+            | "int"
+            | "integer"
+            | "bigint"
+            | "decimal"
+            | "dec"
+            | "numeric"
+            | "fixed"
+            | "float"
+            | "double"
+            | "real"
+            | "bit"
+            | "year"
+    )
+}
+
+fn quote_string_literal(raw: &str) -> String {
+    // Escape for the default sql_mode (backslash escapes enabled).
+    let escaped = raw.replace('\\', "\\\\").replace('\'', "''");
+    format!("'{escaped}'")
 }
 
 struct PrimaryKeyRow {
@@ -376,4 +480,69 @@ async fn load_views(pool: &MySqlPool, db: &str) -> Result<Vec<ViewRow>> {
             definition: Some(definition),
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_default;
+
+    #[test]
+    fn quotes_string_and_enum_literals() {
+        assert_eq!(
+            normalize_default(Some("RESERVED"), "enum('RESERVED','SETTLED')", "").as_deref(),
+            Some("'RESERVED'")
+        );
+        assert_eq!(
+            normalize_default(Some("abc"), "varchar(16)", "").as_deref(),
+            Some("'abc'")
+        );
+        assert_eq!(
+            normalize_default(Some(""), "varchar(16)", "").as_deref(),
+            Some("''")
+        );
+        assert_eq!(
+            normalize_default(Some("it's"), "varchar(16)", "").as_deref(),
+            Some("'it''s'")
+        );
+    }
+
+    #[test]
+    fn leaves_numeric_literals_bare() {
+        assert_eq!(
+            normalize_default(Some("0"), "bigint(20) unsigned", "").as_deref(),
+            Some("0")
+        );
+        assert_eq!(
+            normalize_default(Some("1.50"), "decimal(10,2)", "").as_deref(),
+            Some("1.50")
+        );
+        // A numeric-looking default on a text column is still a string.
+        assert_eq!(
+            normalize_default(Some("123"), "varchar(8)", "").as_deref(),
+            Some("'123'")
+        );
+    }
+
+    #[test]
+    fn leaves_keyword_defaults_bare() {
+        for raw in ["CURRENT_TIMESTAMP", "CURRENT_TIMESTAMP(3)", "NULL"] {
+            assert_eq!(
+                normalize_default(Some(raw), "timestamp", "DEFAULT_GENERATED").as_deref(),
+                Some(raw),
+            );
+        }
+    }
+
+    #[test]
+    fn parenthesizes_expression_defaults() {
+        assert_eq!(
+            normalize_default(Some("uuid()"), "char(36)", "DEFAULT_GENERATED").as_deref(),
+            Some("(uuid())")
+        );
+    }
+
+    #[test]
+    fn passes_through_absent_default() {
+        assert_eq!(normalize_default(None, "varchar(16)", ""), None);
+    }
 }

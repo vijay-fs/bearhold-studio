@@ -32,7 +32,7 @@ export interface EngineVersion {
  *  flags here; the compiler forces every capability() to answer. */
 export interface Capabilities {
   /** ALTER TABLE ... ADD COLUMN IF NOT EXISTS ...
-   *  PG 9.6+; MySQL 8.0.29+; SQLite: no. */
+   *  PG 9.6+; MySQL: no (MariaDB-only extension); SQLite: no. */
   addColumnIfNotExists: boolean;
   /** ALTER TABLE ... RENAME COLUMN a TO b (not CHANGE COLUMN).
    *  PG all; MySQL 8.0+; SQLite 3.25+. */
@@ -104,7 +104,11 @@ export function capabilities(v: EngineVersion): Capabilities {
       const n = minor ?? 7;
       const at = (M: number, N = 0) => m > M || (m === M && n >= N);
       return {
-        addColumnIfNotExists: at(8, 0),
+        // MySQL has never supported IF NOT EXISTS on ADD COLUMN — it's a
+        // MariaDB extension, and we fold MariaDB connections into the
+        // 'mysql' engine, so there's no version gate that's safe here.
+        // The diff only ever adds columns it just proved absent.
+        addColumnIfNotExists: false,
         renameColumnSyntax: at(8, 0),
         modifyColumnRestates: true,
         usingClauseOnAlterType: false,
