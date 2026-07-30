@@ -1161,6 +1161,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "dbstudio-testkit"
+version = "0.0.1"
+dependencies = [
+ "dbstudio-core",
+ "dbstudio-driver-mysql",
+ "dbstudio-driver-postgres",
+ "dbstudio-driver-sqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "dbus"
 version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"

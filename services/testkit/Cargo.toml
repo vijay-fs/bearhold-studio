@@ -1,0 +1,21 @@
+[package]
+name = "dbstudio-testkit"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless CLI shim over the production drivers for automated end-to-end testing."
+
+[[bin]]
+name = "testkit"
+path = "src/main.rs"
+
+[dependencies]
+dbstudio-core = { path = "../core" }
+dbstudio-driver-postgres = { path = "../drivers/postgres" }
+dbstudio-driver-mysql = { path = "../drivers/mysql" }
+dbstudio-driver-sqlite = { path = "../drivers/sqlite" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }

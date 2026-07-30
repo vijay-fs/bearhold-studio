@@ -29,7 +29,9 @@
     "test:e2e:one": "tsx scripts/test-e2e/index.ts --target",
     "demo:up": "docker compose -f infra/compare-demo/docker-compose.yml up -d",
     "demo:down": "docker compose -f infra/compare-demo/docker-compose.yml down -v",
-    "demo:status": "docker compose -f infra/compare-demo/docker-compose.yml ps"
+    "demo:status": "docker compose -f infra/compare-demo/docker-compose.yml ps",
+    "test:e2e:full": "tsx scripts/test-e2e/full.ts",
+    "test:dump": "cargo test -p dbstudio-desktop --test dump_roundtrip -- --ignored"
   },
   "devDependencies": {
     "prettier": "^3.4.2",

@@ -8,6 +8,7 @@ members = [
   "services/drivers/sqlite",
   "services/drivers/mongodb",
   "services/drivers/redis",
+  "services/testkit",
   "apps/desktop/src-tauri",
 ]
 
