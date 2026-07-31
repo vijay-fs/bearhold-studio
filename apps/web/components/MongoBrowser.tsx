@@ -77,6 +77,14 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
     | { mode: 'edit'; document: Record<string, unknown> }
   >(null);
   const [pendingDelete, setPendingDelete] = useState<Record<string, unknown> | null>(null);
+  /** Which pane the collection area shows. Documents is the classic
+   *  find flow; aggregate and indexes are self-contained views. */
+  const [view, setView] = useState<'documents' | 'aggregate' | 'indexes'>('documents');
+  const [creatingCollection, setCreatingCollection] = useState(false);
+  const [newCollectionName, setNewCollectionName] = useState('');
+  const [pendingDropCollection, setPendingDropCollection] = useState<string | null>(null);
+  const [collectionActionError, setCollectionActionError] = useState<string | null>(null);
+  const [collectionActionBusy, setCollectionActionBusy] = useState(false);
 
   // Load databases on mount. Errors here usually mean the connection
   // can't reach Mongo at all — surface them in the workspace rather
@@ -196,6 +204,51 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
     return find.data.documents[selectedIdx] ?? null;
   }, [find, selectedIdx]);
 
+  const createCollection = async () => {
+    const name = newCollectionName.trim();
+    if (!database || !name) return;
+    setCollectionActionBusy(true);
+    setCollectionActionError(null);
+    try {
+      await api.mongo.createCollection(profile, database, name);
+      setCollectionsByDb((prev) => ({
+        ...prev,
+        [database]: [...(prev[database] ?? []), name].sort(),
+      }));
+      setCollection(name);
+      setCreatingCollection(false);
+      setNewCollectionName('');
+    } catch (e) {
+      const err = e as { message?: string };
+      setCollectionActionError(err.message ?? String(e));
+    } finally {
+      setCollectionActionBusy(false);
+    }
+  };
+
+  const dropCollection = async () => {
+    if (!database || !pendingDropCollection) return;
+    setCollectionActionBusy(true);
+    setCollectionActionError(null);
+    try {
+      await api.mongo.dropCollection(profile, database, pendingDropCollection);
+      setCollectionsByDb((prev) => ({
+        ...prev,
+        [database]: (prev[database] ?? []).filter((c) => c !== pendingDropCollection),
+      }));
+      if (collection === pendingDropCollection) {
+        setCollection('');
+        setFind({ kind: 'idle' });
+      }
+      setPendingDropCollection(null);
+    } catch (e) {
+      const err = e as { message?: string };
+      setCollectionActionError(err.message ?? String(e));
+    } finally {
+      setCollectionActionBusy(false);
+    }
+  };
+
   if (initError) {
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -231,6 +284,32 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
           options={collections}
           loading={loadingColls}
         />
+        <div className="flex items-center gap-1 self-end pb-0.5">
+          <button
+            type="button"
+            title="New collection"
+            onClick={() => {
+              setCollectionActionError(null);
+              setCreatingCollection(true);
+            }}
+            disabled={!database}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-40"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            title="Drop collection"
+            onClick={() => {
+              setCollectionActionError(null);
+              setPendingDropCollection(collection);
+            }}
+            disabled={!collection}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive disabled:opacity-40"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
         <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
           {find.kind === 'ok' && (
             <>
@@ -247,6 +326,40 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
         </div>
       </header>
 
+      {/* View tabs */}
+      <nav className="flex items-center gap-1 border-b px-4 py-1.5">
+        {(
+          [
+            ['documents', 'Documents'],
+            ['aggregate', 'Aggregate'],
+            ['indexes', 'Indexes'],
+          ] as const
+        ).map(([key, label]) => (
+          <button
+            key={key}
+            type="button"
+            onClick={() => setView(key)}
+            className={cn(
+              'rounded px-2.5 py-1 text-xs font-medium transition',
+              view === key
+                ? 'bg-primary/10 text-primary'
+                : 'text-muted-foreground hover:bg-accent hover:text-foreground',
+            )}
+          >
+            {label}
+          </button>
+        ))}
+      </nav>
+
+      {view === 'aggregate' && (
+        <AggregateView profile={profile} database={database} collection={collection} />
+      )}
+      {view === 'indexes' && (
+        <IndexesView profile={profile} database={database} collection={collection} />
+      )}
+
+      {view === 'documents' && (
+      <>
       {/* Filter / sort / Find button */}
       <div className="flex flex-wrap items-end gap-2 border-b px-4 py-2">
         <JsonField
@@ -435,6 +548,9 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
         </footer>
       )}
 
+      </>
+      )}
+
       <DocumentEditorDialog
         profile={profile}
         database={database}
@@ -459,6 +575,85 @@ export function MongoBrowser({ profile }: MongoBrowserProps) {
           void runFind({ newSkip: skip });
         }}
       />
+
+      {/* Create-collection dialog */}
+      <Dialog
+        open={creatingCollection}
+        onOpenChange={(o) => !o && !collectionActionBusy && setCreatingCollection(false)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>New collection</DialogTitle>
+            <DialogDescription>
+              Created empty in <span className="font-mono">{database}</span>.
+            </DialogDescription>
+          </DialogHeader>
+          <Input
+            value={newCollectionName}
+            onChange={(e) => setNewCollectionName(e.target.value)}
+            placeholder="collection name"
+            autoFocus
+            spellCheck={false}
+            className="font-mono text-sm"
+            onKeyDown={(e) => e.key === 'Enter' && void createCollection()}
+          />
+          {collectionActionError && (
+            <p className="text-xs text-destructive">{collectionActionError}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setCreatingCollection(false)}
+              disabled={collectionActionBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => void createCollection()}
+              disabled={collectionActionBusy || !newCollectionName.trim()}
+            >
+              {collectionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Plus className="h-3.5 w-3.5" />}
+              Create
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Drop-collection confirm */}
+      <Dialog
+        open={pendingDropCollection != null}
+        onOpenChange={(o) => !o && !collectionActionBusy && setPendingDropCollection(null)}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Drop collection?</DialogTitle>
+            <DialogDescription>
+              <span className="font-mono">{database}.{pendingDropCollection}</span> and every
+              document in it will be permanently removed. This can&apos;t be undone.
+            </DialogDescription>
+          </DialogHeader>
+          {collectionActionError && (
+            <p className="text-xs text-destructive">{collectionActionError}</p>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setPendingDropCollection(null)}
+              disabled={collectionActionBusy}
+            >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void dropCollection()}
+              disabled={collectionActionBusy}
+            >
+              {collectionActionBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              Drop collection
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -919,6 +1114,352 @@ function JsonTree({
     <div className="leading-relaxed">
       {renderKey()}
       <span className="text-muted-foreground">{String(value)}</span>
+    </div>
+  );
+}
+
+// ---- aggregation view ----------------------------------------------------
+
+const DEFAULT_PIPELINE = `[
+  { "$match": {} },
+  { "$limit": 20 }
+]`;
+
+/** Aggregation runner: a JSON pipeline editor over the same document
+ *  cards the find view uses. The backend appends a defensive $limit
+ *  when the pipeline doesn't end in one. */
+function AggregateView({
+  profile,
+  database,
+  collection,
+}: {
+  profile: ConnectionProfile;
+  database: string;
+  collection: string;
+}) {
+  const [pipelineText, setPipelineText] = useState(DEFAULT_PIPELINE);
+  const [state, setState] = useState<
+    | { kind: 'idle' }
+    | { kind: 'loading' }
+    | { kind: 'ok'; data: MongoFindResponse }
+    | { kind: 'error'; message: string }
+  >({ kind: 'idle' });
+
+  const run = async () => {
+    if (!database || !collection) return;
+    let stages: Array<Record<string, unknown>>;
+    try {
+      const parsed = JSON.parse(pipelineText) as unknown;
+      if (!Array.isArray(parsed) || parsed.some((st) => typeof st !== 'object' || st == null)) {
+        setState({ kind: 'error', message: 'Pipeline must be a JSON array of stage objects.' });
+        return;
+      }
+      stages = parsed as Array<Record<string, unknown>>;
+    } catch (e) {
+      setState({ kind: 'error', message: `Pipeline is not valid JSON: ${(e as Error).message}` });
+      return;
+    }
+    setState({ kind: 'loading' });
+    try {
+      const data = await api.mongo.aggregate(profile, database, collection, stages);
+      setState({ kind: 'ok', data });
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      setState({ kind: 'error', message: `${err.code ?? 'unknown'} · ${err.message ?? String(e)}` });
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="border-b px-4 py-2">
+        <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          Pipeline stages
+        </label>
+        <textarea
+          value={pipelineText}
+          onChange={(e) => setPipelineText(e.target.value)}
+          spellCheck={false}
+          rows={Math.min(14, pipelineText.split('\n').length + 1)}
+          className="scrollbar-thin mt-1 w-full resize-y rounded border border-input bg-background p-2 font-mono text-xs"
+        />
+        <div className="mt-1.5 flex items-center gap-2">
+          <Button size="sm" onClick={() => void run()} disabled={!collection || state.kind === 'loading'}>
+            {state.kind === 'loading' ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Play className="h-3 w-3" />
+            )}
+            Run pipeline
+          </Button>
+          {state.kind === 'ok' && (
+            <span className="text-[11px] text-muted-foreground">
+              {state.data.documents.length} result{state.data.documents.length === 1 ? '' : 's'} ·{' '}
+              {state.data.elapsed_ms} ms
+            </span>
+          )}
+        </div>
+      </div>
+
+      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
+        {state.kind === 'idle' && (
+          <p className="p-4 text-xs text-muted-foreground">
+            Write a pipeline and click <span className="font-medium">Run pipeline</span>. Results
+            are capped at 500 documents unless the pipeline ends in its own{' '}
+            <code className="font-mono">$limit</code>.
+          </p>
+        )}
+        {state.kind === 'error' && (
+          <div className="rounded border border-destructive/30 bg-destructive/5 p-3">
+            <div className="flex items-center gap-2 text-destructive">
+              <AlertCircle className="h-4 w-4" />
+              <span className="text-sm font-semibold">Aggregation failed</span>
+            </div>
+            <p className="mt-1 break-all text-xs text-muted-foreground">{state.message}</p>
+          </div>
+        )}
+        {state.kind === 'ok' && state.data.documents.length === 0 && (
+          <p className="p-4 text-xs text-muted-foreground">Pipeline returned no documents.</p>
+        )}
+        {state.kind === 'ok' && state.data.documents.length > 0 && (
+          <ul className="space-y-2">
+            {state.data.documents.map((doc, i) => (
+              <li key={i} className="rounded-lg border bg-card p-2 font-mono text-[11px]">
+                <JsonTree value={doc} initiallyOpen={state.data.documents.length <= 5} depth={0} />
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---- indexes view --------------------------------------------------------
+
+interface IndexSpec {
+  name?: string;
+  key?: Record<string, unknown>;
+  unique?: boolean;
+  sparse?: boolean;
+  expireAfterSeconds?: number;
+}
+
+function IndexesView({
+  profile,
+  database,
+  collection,
+}: {
+  profile: ConnectionProfile;
+  database: string;
+  collection: string;
+}) {
+  const [state, setState] = useState<
+    | { kind: 'loading' }
+    | { kind: 'ok'; indexes: IndexSpec[] }
+    | { kind: 'error'; message: string }
+  >({ kind: 'loading' });
+  const [keysText, setKeysText] = useState('{ "field": 1 }');
+  const [unique, setUnique] = useState(false);
+  const [indexName, setIndexName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [pendingDrop, setPendingDrop] = useState<string | null>(null);
+
+  const reload = async () => {
+    if (!database || !collection) {
+      setState({ kind: 'ok', indexes: [] });
+      return;
+    }
+    setState({ kind: 'loading' });
+    try {
+      const indexes = (await api.mongo.listIndexes(profile, database, collection)) as IndexSpec[];
+      setState({ kind: 'ok', indexes });
+    } catch (e) {
+      const err = e as { code?: string; message?: string };
+      setState({ kind: 'error', message: `${err.code ?? 'unknown'} · ${err.message ?? String(e)}` });
+    }
+  };
+
+  useEffect(() => {
+    void reload();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [database, collection, profile.id]);
+
+  const create = async () => {
+    setActionError(null);
+    let keys: Record<string, unknown>;
+    try {
+      const parsed = JSON.parse(keysText) as unknown;
+      if (typeof parsed !== 'object' || parsed == null || Array.isArray(parsed) || Object.keys(parsed).length === 0) {
+        setActionError('Key spec must be a non-empty JSON object, e.g. { "email": 1 }.');
+        return;
+      }
+      keys = parsed as Record<string, unknown>;
+    } catch (e) {
+      setActionError(`Key spec is not valid JSON: ${(e as Error).message}`);
+      return;
+    }
+    setBusy(true);
+    try {
+      await api.mongo.createIndex(
+        profile,
+        database,
+        collection,
+        keys,
+        unique,
+        indexName.trim() || undefined,
+      );
+      setIndexName('');
+      await reload();
+    } catch (e) {
+      const err = e as { message?: string };
+      setActionError(err.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const drop = async () => {
+    if (!pendingDrop) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api.mongo.dropIndex(profile, database, collection, pendingDrop);
+      setPendingDrop(null);
+      await reload();
+    } catch (e) {
+      const err = e as { message?: string };
+      setActionError(err.message ?? String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Create form */}
+      <div className="flex flex-wrap items-end gap-2 border-b px-4 py-2">
+        <div className="flex min-w-[220px] flex-1 flex-col">
+          <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Key spec
+          </label>
+          <Input
+            value={keysText}
+            onChange={(e) => setKeysText(e.target.value)}
+            spellCheck={false}
+            placeholder='{ "email": 1, "createdAt": -1 }'
+            className="h-8 font-mono text-xs"
+          />
+        </div>
+        <div className="flex flex-col">
+          <label className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+            Name (optional)
+          </label>
+          <Input
+            value={indexName}
+            onChange={(e) => setIndexName(e.target.value)}
+            spellCheck={false}
+            placeholder="auto"
+            className="h-8 w-36 font-mono text-xs"
+          />
+        </div>
+        <label className="flex h-8 items-center gap-1.5 text-xs">
+          <input type="checkbox" checked={unique} onChange={(e) => setUnique(e.target.checked)} />
+          unique
+        </label>
+        <Button size="sm" onClick={() => void create()} disabled={busy || !collection}>
+          {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Plus className="h-3 w-3" />}
+          Create index
+        </Button>
+      </div>
+
+      {actionError && (
+        <p className="border-b bg-destructive/5 px-4 py-1.5 text-xs text-destructive">{actionError}</p>
+      )}
+
+      <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto p-3">
+        {state.kind === 'loading' && (
+          <div className="flex h-24 items-center justify-center text-xs text-muted-foreground">
+            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+            Loading indexes...
+          </div>
+        )}
+        {state.kind === 'error' && (
+          <div className="rounded border border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+            {state.message}
+          </div>
+        )}
+        {state.kind === 'ok' && (
+          <div className="overflow-x-auto rounded border">
+            <table className="w-full text-xs">
+              <thead className="bg-muted/60 text-left">
+                <tr>
+                  <th className="px-3 py-1.5 font-medium">Name</th>
+                  <th className="px-3 py-1.5 font-medium">Keys</th>
+                  <th className="px-3 py-1.5 font-medium">Flags</th>
+                  <th className="px-3 py-1.5" />
+                </tr>
+              </thead>
+              <tbody>
+                {state.indexes.map((idx) => (
+                  <tr key={idx.name ?? JSON.stringify(idx.key)} className="border-t">
+                    <td className="px-3 py-1.5 font-mono">{idx.name}</td>
+                    <td className="px-3 py-1.5 font-mono text-muted-foreground">
+                      {JSON.stringify(idx.key)}
+                    </td>
+                    <td className="px-3 py-1.5">
+                      {[
+                        idx.unique && 'unique',
+                        idx.sparse && 'sparse',
+                        idx.expireAfterSeconds != null && `ttl ${idx.expireAfterSeconds}s`,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || '—'}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {/* `_id_` is Mongo's mandatory index — the server
+                          refuses to drop it, so don't offer to. */}
+                      {idx.name !== '_id_' && (
+                        <button
+                          type="button"
+                          title={`Drop index ${idx.name}`}
+                          onClick={() => setPendingDrop(idx.name ?? null)}
+                          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Drop-index confirm */}
+      <Dialog open={pendingDrop != null} onOpenChange={(o) => !o && !busy && setPendingDrop(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Drop index?</DialogTitle>
+            <DialogDescription>
+              <span className="font-mono">{pendingDrop}</span> on{' '}
+              <span className="font-mono">{database}.{collection}</span> will be dropped. Queries
+              relying on it fall back to collection scans.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDrop(null)} disabled={busy}>
+              Cancel
+            </Button>
+            <Button variant="destructive" onClick={() => void drop()} disabled={busy}>
+              {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Trash2 className="h-3.5 w-3.5" />}
+              Drop index
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
