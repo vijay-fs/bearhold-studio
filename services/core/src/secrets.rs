@@ -120,17 +120,15 @@ pub fn init(app_data_dir: &Path) -> Result<()> {
         file_path,
         cache: RwLock::new(cache),
     };
-    STORE.set(store).map_err(|_| {
-        DbError::Internal("secrets store already initialized (race)".to_string())
-    })?;
+    STORE
+        .set(store)
+        .map_err(|_| DbError::Internal("secrets store already initialized (race)".to_string()))?;
     Ok(())
 }
 
 fn store() -> Result<&'static SecretsStore> {
     STORE.get().ok_or_else(|| {
-        DbError::Internal(
-            "secrets store not initialized — call secrets::init() at startup".into(),
-        )
+        DbError::Internal("secrets store not initialized — call secrets::init() at startup".into())
     })
 }
 
@@ -172,8 +170,8 @@ pub async fn get(profile_id: Uuid, slot: Slot) -> Result<Option<String>> {
         .cipher
         .decrypt(nonce, ct.as_ref())
         .map_err(|e| DbError::Internal(format!("decrypt: {e}")))?;
-    let s = String::from_utf8(pt)
-        .map_err(|e| DbError::Internal(format!("secret not utf8: {e}")))?;
+    let s =
+        String::from_utf8(pt).map_err(|e| DbError::Internal(format!("secret not utf8: {e}")))?;
     debug!(profile = %profile_id, slot = ?slot, present = true, len = s.len(), "secrets get");
     Ok(Some(s))
 }
@@ -213,8 +211,8 @@ fn base64_decode(s: &str) -> Result<Vec<u8>> {
 
 fn load_or_generate_master_key(path: &Path) -> Result<[u8; 32]> {
     if path.exists() {
-        let bytes = std::fs::read(path)
-            .map_err(|e| DbError::Internal(format!("read master key: {e}")))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| DbError::Internal(format!("read master key: {e}")))?;
         if bytes.len() != 32 {
             return Err(DbError::Internal(format!(
                 "master key corrupted (expected 32 bytes, got {})",
@@ -241,8 +239,8 @@ fn read_store_file(path: &Path) -> Result<StoreFile> {
             items: Default::default(),
         });
     }
-    let bytes = std::fs::read(path)
-        .map_err(|e| DbError::Internal(format!("read secrets file: {e}")))?;
+    let bytes =
+        std::fs::read(path).map_err(|e| DbError::Internal(format!("read secrets file: {e}")))?;
     serde_json::from_slice(&bytes)
         .map_err(|e| DbError::Internal(format!("parse secrets file: {e}")))
 }
@@ -255,8 +253,7 @@ fn write_store_file(path: &Path, store: &StoreFile) -> Result<()> {
     std::fs::write(&tmp, bytes)
         .map_err(|e| DbError::Internal(format!("write secrets tmp: {e}")))?;
     set_file_permissions(&tmp)?;
-    std::fs::rename(&tmp, path)
-        .map_err(|e| DbError::Internal(format!("rename secrets: {e}")))?;
+    std::fs::rename(&tmp, path).map_err(|e| DbError::Internal(format!("rename secrets: {e}")))?;
     Ok(())
 }
 
@@ -305,7 +302,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         init(dir.path()).unwrap();
         let id = Uuid::new_v4();
-        set(id, Slot::Password, "secret-value".into()).await.unwrap();
+        set(id, Slot::Password, "secret-value".into())
+            .await
+            .unwrap();
         let got = get(id, Slot::Password).await.unwrap();
         assert_eq!(got.as_deref(), Some("secret-value"));
         let exists = has(id, Slot::Password).await.unwrap();

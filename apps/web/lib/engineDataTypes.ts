@@ -116,8 +116,6 @@ export const ENGINE_TYPES: Record<DatabaseEngine, TypeGroup[]> = {
   // Non-relational engines don't go through this picker (the
   // relational DDL dialog isn't shown for them), but TS wants the
   // record to be exhaustive over the union.
-  mongodb: [],
-  redis: [],
   cassandra: [],
   neo4j: [],
   couchdb: [],

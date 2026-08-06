@@ -18,19 +18,19 @@ pub fn decode_cell(row: &SqliteRow, idx: usize, type_name: &str) -> Value {
             .map(Value::Number)
             .unwrap_or(Value::Null),
 
-        "TEXT" | "VARCHAR" | "CHAR" | "CLOB" => {
-            opt::<String>(row, idx).map(Value::String).unwrap_or(Value::Null)
-        }
+        "TEXT" | "VARCHAR" | "CHAR" | "CLOB" => opt::<String>(row, idx)
+            .map(Value::String)
+            .unwrap_or(Value::Null),
 
-        "BOOLEAN" | "BOOL" => opt::<bool>(row, idx).map(Value::Bool).unwrap_or(Value::Null),
+        "BOOLEAN" | "BOOL" => opt::<bool>(row, idx)
+            .map(Value::Bool)
+            .unwrap_or(Value::Null),
 
         // SQLite has no native date/time type. Apps typically store as TEXT
         // (ISO-8601) or INTEGER (unix epoch). Try both via sqlx.
         "DATETIME" | "TIMESTAMP" => opt::<NaiveDateTime>(row, idx)
             .map(|t| Value::String(t.to_string()))
-            .or_else(|| {
-                opt::<DateTime<Utc>>(row, idx).map(|t| Value::String(t.to_rfc3339()))
-            })
+            .or_else(|| opt::<DateTime<Utc>>(row, idx).map(|t| Value::String(t.to_rfc3339())))
             .or_else(|| opt::<String>(row, idx).map(Value::String))
             .unwrap_or(Value::Null),
         "DATE" => opt::<NaiveDate>(row, idx)

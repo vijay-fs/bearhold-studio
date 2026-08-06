@@ -220,19 +220,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : (
             <ul className="space-y-0.5">
               {sortedProfiles.map((p) => {
-                // Default connection click lands in the engine's
-                // primary workspace — SQL editor for SQL engines,
-                // document browser for MongoDB, key/value browser
-                // for Redis. NoSQL engines don't have a SQL editor
-                // at all so we route them straight to the workspace
-                // that matches their semantics.
-                const defaultPath =
-                  p.engine === 'mongodb'
-                    ? '/mongo'
-                    : p.engine === 'redis'
-                      ? '/redis'
-                      : '/sql';
-                const href = `${defaultPath}?cid=${p.id}` as Route;
+                // Every supported engine (postgres/mysql/sqlite) has a
+                // SQL workspace, so a connection click always lands in
+                // the SQL editor.
+                const href = `/sql?cid=${p.id}` as Route;
                 // "Active" is now a search-param check rather than a
                 // path prefix. usePathname() doesn't include query
                 // strings, so we read the URL directly each render
@@ -270,19 +261,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       </Link>
                       <ConnectionMenu
                         profileId={p.id}
-                        engine={p.engine}
                         onDelete={() => askDelete(p.id, p.name)}
                         active={Boolean(active)}
                         pinned={Boolean(meta[p.id]?.pinned)}
                         onTogglePin={() => togglePinned(p.id)}
                       />
                     </div>
-                    {/* TableNav is SQL-shaped (introspects tables /
-                        columns) — Mongo/Redis don't surface tables via
-                        the SQL Driver trait, and their workspaces have
-                        their own native navigation, so skip rendering
-                        it for those engines. */}
-                    {active && p.engine !== 'mongodb' && p.engine !== 'redis' && (
+                    {active && (
                       <div className="mt-1 ml-7">
                         <TableNav profile={p} pathname={pathname ?? ''} router={router} />
                       </div>
@@ -403,25 +388,17 @@ function ThemeToggle() {
 
 function ConnectionMenu({
   profileId,
-  engine,
   onDelete,
   active,
   pinned,
   onTogglePin,
 }: {
   profileId: string;
-  engine: ConnectionProfile['engine'];
   onDelete: () => void;
   active: boolean;
   pinned: boolean;
   onTogglePin: () => void;
 }) {
-  // Schema / History / Snippets are SQL-only concepts. Mongo and Redis
-  // don't have introspectable relational schemas, don't accumulate
-  // query history (they aren't queries), and don't host saved SQL
-  // snippets. Hide those entries on non-SQL connections so the user
-  // can't navigate into pages that would just error out.
-  const sqlOnly = engine !== 'mongodb' && engine !== 'redis';
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -449,29 +426,25 @@ function ConnectionMenu({
           {pinned ? 'Unpin' : 'Pin to top'}
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        {sqlOnly && (
-          <>
-            <DropdownMenuItem asChild>
-              <Link href={`/schema?cid=${profileId}` as Route}>
-                <Workflow className="h-3 w-3" />
-                Schema
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href={`/history?cid=${profileId}` as Route}>
-                <History className="h-3 w-3" />
-                History
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuItem asChild>
-              <Link href={`/snippets?cid=${profileId}` as Route}>
-                <Bookmark className="h-3 w-3" />
-                Saved snippets
-              </Link>
-            </DropdownMenuItem>
-            <DropdownMenuSeparator />
-          </>
-        )}
+        <DropdownMenuItem asChild>
+          <Link href={`/schema?cid=${profileId}` as Route}>
+            <Workflow className="h-3 w-3" />
+            Schema
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={`/history?cid=${profileId}` as Route}>
+            <History className="h-3 w-3" />
+            History
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuItem asChild>
+          <Link href={`/snippets?cid=${profileId}` as Route}>
+            <Bookmark className="h-3 w-3" />
+            Saved snippets
+          </Link>
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem asChild>
           <Link href={`/edit?cid=${profileId}` as Route}>
             <Pencil className="h-3 w-3" />

@@ -101,12 +101,10 @@ async fn load_table_names(pool: &SqlitePool) -> Result<Vec<String>> {
 }
 
 async fn load_views(pool: &SqlitePool) -> Result<Vec<(String, String)>> {
-    let rows = sqlx::query(
-        "SELECT name, sql FROM sqlite_master WHERE type = 'view' ORDER BY name",
-    )
-    .fetch_all(pool)
-    .await
-    .map_err(map_sqlx_error)?;
+    let rows = sqlx::query("SELECT name, sql FROM sqlite_master WHERE type = 'view' ORDER BY name")
+        .fetch_all(pool)
+        .await
+        .map_err(map_sqlx_error)?;
     Ok(rows
         .into_iter()
         .map(|r| (r.get::<String, _>(0), r.get::<String, _>(1)))
@@ -196,7 +194,10 @@ async fn load_indexes(pool: &SqlitePool, table: &str) -> Result<Vec<Index>> {
         .fetch_all(pool)
         .await
         .map_err(map_sqlx_error)?;
-        let columns: Vec<String> = info_rows.into_iter().map(|r| r.get::<String, _>(2)).collect();
+        let columns: Vec<String> = info_rows
+            .into_iter()
+            .map(|r| r.get::<String, _>(2))
+            .collect();
 
         indexes.push(Index {
             name,

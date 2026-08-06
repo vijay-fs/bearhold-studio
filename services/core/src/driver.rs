@@ -23,8 +23,7 @@ pub trait Driver: Send + Sync {
     /// "Test connection" button.
     async fn ping(&self, profile: &ConnectionProfile) -> Result<()>;
 
-    /// Run a SQL or engine-native query. Drivers that don't have ad-hoc query
-    /// surface (Redis, etc.) return `DbError::Unsupported`.
+    /// Run a SQL query and return its result set.
     async fn execute(&self, profile: &ConnectionProfile, req: QueryRequest) -> Result<QueryResult>;
 
     /// Introspect the schema. This is the input to the ER diagram view.

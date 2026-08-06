@@ -496,11 +496,6 @@ function engineForDumpFormat(f: DumpFormat | null): string | null {
     case 'sqlite_file':
     case 'sqlite_plain':
       return 'sqlite';
-    case 'mongo_bson_dir':
-    case 'jsonl':
-      return 'mongodb';
-    case 'redis_rdb':
-      return 'redis';
     default:
       return null;
   }

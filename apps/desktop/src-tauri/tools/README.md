@@ -1,10 +1,13 @@
 # Installer-bundled CLI tools
 
 This directory holds the database CLI tools (`pg_dump`, `pg_restore`,
-`psql`, `mysqldump`, `mysql`, `sqlite3`, `mongodump`, `redis-cli`, ...)
-that the Export/Import features spawn. Shipping them **inside the
-installer** means end users get working export/import with **zero local
-setup** and no network download.
+`psql`, `mysqldump`, `mysql`, `sqlite3`) that the Export/Import features
+spawn. Shipping them **inside the installer** means end users get
+working export/import with **zero local setup** and no network download.
+
+On macOS these are produced by `scripts/repackage-macos-tools.mjs`,
+which copies the tool plus its dylibs and rewrites load commands so the
+binary runs on a Mac with no Homebrew / vendor install.
 
 ## Layout
 
@@ -37,19 +40,20 @@ The script reads `src/tools/manifest.json`, downloads the archive for
 the current OS/arch, verifies its SHA-256, and copies the advertised
 binaries here.
 
-## Before this actually ships
+## Populating the bundles
 
-The `postgres`, `mysql`, and `redis` bundles in `manifest.json` still
-point at placeholder URLs (`tools.bearhold.studio`) with `TODO_...`
-SHA-256 values, so the fetch script skips them. To bundle them:
+On the current build machine (macOS), run:
 
-1. Host the real per-platform archives.
-2. Put the real URL + SHA-256 in `manifest.json`.
-3. Re-run `pnpm run desktop:tools`.
+```
+node scripts/repackage-macos-tools.mjs        # all: postgres, mysql, sqlite
+```
 
-`sqlite` and `mongodb` already point at real vendor URLs (sqlite.org,
-fastdl.mongodb.org) and will populate once their SHA-256 values are
-filled in.
+This finds each tool on the machine (Homebrew `libpq` / `mysql-client`,
+system `sqlite3`), makes it relocatable, and drops it here. For Linux /
+Windows, the `manifest.json` download path (`scripts/fetch-desktop-tools.mjs`)
+still applies — its `postgres` / `mysql` URLs are placeholders
+(`tools.bearhold.studio`, `TODO_...` hashes) and need real hosted
+archives + SHA-256 values before they populate.
 
 ## Licensing
 
@@ -66,8 +70,6 @@ Most tools are permissive and only need attribution:
 |------|---------|
 | pg_dump / pg_restore / psql | PostgreSQL (permissive) |
 | sqlite3 | Public domain |
-| mongodump etc. | Apache-2.0 |
-| redis-cli (Valkey) | BSD-3-Clause |
 
 **`mysqldump` / `mysql` are GPL-2.0** — the one copyleft case. Bundling
 is lawful because the app runs them as **separate executables at arm's

@@ -3,9 +3,9 @@
 // same round-trip. Consumed by the diff and data-diff pages to pass
 // `sourceVersion` / `writeSideVersion` into the SQL generators.
 //
-// NoSQL engines (Mongo, Redis) return `Unsupported` from the Rust
-// side. We swallow that and cache `null` so we don't retry on every
-// diff refresh — the frontend treats null as "safe minimum
+// Engines that don't report a version return `Unsupported` from the
+// Rust side. We swallow that and cache `null` so we don't retry on
+// every diff refresh — the frontend treats null as "safe minimum
 // capability set" which is correct for engines outside the
 // version-aware SQL dispatch.
 

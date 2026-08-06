@@ -18,8 +18,6 @@ dbstudio-core = { path = "../../../services/core" }
 dbstudio-driver-postgres = { path = "../../../services/drivers/postgres" }
 dbstudio-driver-mysql = { path = "../../../services/drivers/mysql" }
 dbstudio-driver-sqlite = { path = "../../../services/drivers/sqlite" }
-dbstudio-driver-mongodb = { path = "../../../services/drivers/mongodb" }
-dbstudio-driver-redis = { path = "../../../services/drivers/redis" }
 tauri = { workspace = true }
 tauri-plugin-shell = { workspace = true }
 tauri-plugin-updater = { workspace = true }
@@ -37,7 +35,7 @@ dashmap = { workspace = true }
 
 # Tool-bundle downloader: HTTP fetch with streamed progress, SHA-256
 # verification of the archive, then extraction. Used by the on-demand
-# tool installer (pg_dump, mysqldump, mongodump, ...).
+# tool installer (pg_dump, mysqldump, sqlite3).
 reqwest = { version = "0.12", default-features = false, features = [
   "rustls-tls",
   "stream",

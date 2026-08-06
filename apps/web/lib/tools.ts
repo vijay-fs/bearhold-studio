@@ -74,9 +74,7 @@ export type DumpFormat =
   | 'mysql_plain'
   | 'sqlite_file'
   | 'sqlite_plain'
-  | 'mongo_bson_dir'
   | 'jsonl'
-  | 'redis_rdb'
   | 'gzip'
   | 'unknown';
 
@@ -155,10 +153,6 @@ export function bundleKeyForEngine(engine: string): string {
       return 'mysql';
     case 'sqlite':
       return 'sqlite';
-    case 'mongodb':
-      return 'mongodb';
-    case 'redis':
-      return 'redis';
     default:
       return '';
   }

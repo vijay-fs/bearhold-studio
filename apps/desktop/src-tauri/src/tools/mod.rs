@@ -1,13 +1,12 @@
-// On-demand tool bundle installer.
+// Tool bundle status + on-demand installer.
 //
 // The dump/import features need engine-specific CLI tools (pg_dump,
-// mysqldump, mongodump, ...) that we don't want to ship with the
-// installer for the reasons in the design doc: they're 30-55 MB
-// each, add licensing complexity, and get out of sync with server
-// versions. Instead the frontend prompts the user with "Download
-// PostgreSQL tools (18 MB)" the first time they hit Export, we fetch
-// the archive here, verify + extract into the app-support dir, and
-// remember the install for next time.
+// mysqldump, sqlite3). These normally ship INSIDE the installer (see
+// `dump::tool_locator` and the `tools/` resource dir), so most users
+// need no setup. This module is the fallback path: it reports bundle
+// status to the frontend and, when a tool isn't bundled or on PATH,
+// can download it into the app-support dir (verify + extract) or show
+// an OS-specific install hint.
 
 pub mod cache;
 pub mod download;
@@ -196,22 +195,10 @@ fn install_hint_for(bundle_key: &str) -> Option<String> {
         }
         ("mysql", "macos") => "brew install mysql-client && brew link --force mysql-client",
         ("mysql", "linux") => "sudo apt-get install mysql-client",
-        ("mysql", "windows") => {
-            "Install MySQL from https://dev.mysql.com/downloads/installer/"
-        }
+        ("mysql", "windows") => "Install MySQL from https://dev.mysql.com/downloads/installer/",
         ("sqlite", "macos") => "brew install sqlite",
         ("sqlite", "linux") => "sudo apt-get install sqlite3",
         ("sqlite", "windows") => "Install SQLite from https://sqlite.org/download.html",
-        ("mongodb", "macos") => "brew install mongodb-database-tools",
-        ("mongodb", "linux") => {
-            "Follow https://www.mongodb.com/docs/database-tools/installation/"
-        }
-        ("mongodb", "windows") => {
-            "Install MongoDB Database Tools from https://www.mongodb.com/try/download/database-tools"
-        }
-        ("redis", "macos") => "brew install redis",
-        ("redis", "linux") => "sudo apt-get install redis-tools",
-        ("redis", "windows") => "Install Redis (or the Valkey CLI) from your package manager",
         _ => return None,
     };
     Some(hint.to_string())

@@ -10,7 +10,6 @@
 // Magic-byte references:
 //   - Postgres custom dump    starts with `PGDMP`
 //   - SQLite database file    starts with `SQLite format 3\0`
-//   - Redis RDB snapshot      starts with `REDIS`
 // Header-comment references (first 4 KB, case-insensitive):
 //   - PG plain SQL            `-- PostgreSQL database dump`
 //   - MySQL plain SQL         `-- MySQL dump`
@@ -41,13 +40,6 @@ pub enum DumpFormat {
     SqliteFile,
     /// `.dump` from the sqlite3 CLI. Runs through `sqlite3 db < file`.
     SqlitePlain,
-    /// mongodump BSON directory (the user pointed at the top-level
-    /// dir OR the .bson file). Import with `mongorestore`.
-    MongoBsonDir,
-    /// JSON Lines — one document per line. Driver-side `insertMany`.
-    Jsonl,
-    /// Redis RDB snapshot. NOT importable live (see design doc).
-    RedisRdb,
     /// A gzipped archive. We don't peek inside; the UI asks the user
     /// to gunzip first. Rare in practice — most dump tools embed
     /// their own compression.
@@ -72,25 +64,14 @@ pub struct DumpProbe {
 pub fn probe(path: &Path) -> std::io::Result<DumpProbe> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let metadata = std::fs::metadata(&canonical)?;
-    // If we were pointed at a directory, treat it as a Mongo dump if
-    // it contains any .bson files. Otherwise unknown.
+    // Directories aren't a supported import source (the SQL engines
+    // all take a single file), so report Unknown and let the UI ask.
     if metadata.is_dir() {
-        let has_bson = std::fs::read_dir(&canonical)?
-            .flatten()
-            .any(|e| e.file_name().to_string_lossy().ends_with(".bson"));
         return Ok(DumpProbe {
-            format: if has_bson {
-                DumpFormat::MongoBsonDir
-            } else {
-                DumpFormat::Unknown
-            },
+            format: DumpFormat::Unknown,
             size_bytes: 0,
             path: canonical,
-            description: if has_bson {
-                "MongoDB BSON dump directory".into()
-            } else {
-                "Directory (no .bson files detected)".into()
-            },
+            description: "Directory (not a supported dump file)".into(),
         });
     }
 
@@ -127,9 +108,6 @@ fn classify(bytes: &[u8], path: &Path) -> DumpFormat {
     if bytes.starts_with(b"SQLite format 3\0") {
         return DumpFormat::SqliteFile;
     }
-    if bytes.starts_with(b"REDIS") {
-        return DumpFormat::RedisRdb;
-    }
     // Header sniff on the first few KB as UTF-8 (lossy). We only
     // pattern-match ASCII substrings so lossy decode is safe.
     let text = String::from_utf8_lossy(bytes);
@@ -155,8 +133,6 @@ fn classify(bytes: &[u8], path: &Path) -> DumpFormat {
         Some("dump") => DumpFormat::PgCustom,
         Some("sqlite") | Some("db") | Some("sqlite3") => DumpFormat::SqliteFile,
         Some("jsonl") | Some("ndjson") => DumpFormat::Jsonl,
-        Some("bson") => DumpFormat::MongoBsonDir,
-        Some("rdb") => DumpFormat::RedisRdb,
         _ => DumpFormat::Unknown,
     }
 }
@@ -189,9 +165,7 @@ fn describe(f: DumpFormat) -> String {
         DumpFormat::MysqlPlain => "MySQL plain SQL dump (mysql)".into(),
         DumpFormat::SqliteFile => "SQLite database file".into(),
         DumpFormat::SqlitePlain => "SQLite plain SQL dump (sqlite3)".into(),
-        DumpFormat::MongoBsonDir => "MongoDB BSON dump (mongorestore)".into(),
         DumpFormat::Jsonl => "JSON Lines".into(),
-        DumpFormat::RedisRdb => "Redis RDB snapshot".into(),
         DumpFormat::Gzip => "Gzipped archive — decompress before import".into(),
         DumpFormat::Unknown => "Unknown format — pick manually".into(),
     }
@@ -222,11 +196,6 @@ mod tests {
             probe_bytes(b"SQLite format 3\0extra bytes here", "db"),
             DumpFormat::SqliteFile,
         );
-    }
-
-    #[test]
-    fn detects_redis_rdb() {
-        assert_eq!(probe_bytes(b"REDIS0011", "rdb"), DumpFormat::RedisRdb);
     }
 
     #[test]

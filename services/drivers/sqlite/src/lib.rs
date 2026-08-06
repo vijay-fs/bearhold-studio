@@ -12,8 +12,8 @@ use dashmap::DashMap;
 use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate, ConnectionProfile,
-    DbError, Driver, QueryRequest, QueryResult, ResultColumn, Result,
-    RowDelete, RowInsert, Schema, Value,
+    DbError, Driver, QueryRequest, QueryResult, Result, ResultColumn, RowDelete, RowInsert, Schema,
+    Value,
 };
 use sqlx::{
     sqlite::{Sqlite, SqlitePool, SqlitePoolOptions},
@@ -123,7 +123,9 @@ fn leading_keyword(sql: &str) -> String {
     while i < bytes.len() && bytes[i].is_ascii_alphabetic() {
         i += 1;
     }
-    std::str::from_utf8(&bytes[start..i]).unwrap_or("").to_string()
+    std::str::from_utf8(&bytes[start..i])
+        .unwrap_or("")
+        .to_string()
 }
 
 #[async_trait]
@@ -160,11 +162,7 @@ impl Driver for SqliteDriver {
         })
     }
 
-    async fn execute(
-        &self,
-        profile: &ConnectionProfile,
-        req: QueryRequest,
-    ) -> Result<QueryResult> {
+    async fn execute(&self, profile: &ConnectionProfile, req: QueryRequest) -> Result<QueryResult> {
         let pool = self.pool_for(profile).await?;
         let started = std::time::Instant::now();
         let limit = req.limit.unwrap_or(DEFAULT_ROW_LIMIT) as usize;
@@ -186,11 +184,7 @@ impl Driver for SqliteDriver {
         introspect::load_schema(&pool).await
     }
 
-    async fn update_cell(
-        &self,
-        profile: &ConnectionProfile,
-        update: CellUpdate,
-    ) -> Result<u64> {
+    async fn update_cell(&self, profile: &ConnectionProfile, update: CellUpdate) -> Result<u64> {
         if update.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "update_cell requires at least one pk column".into(),
@@ -221,11 +215,7 @@ impl Driver for SqliteDriver {
         Ok(result.rows_affected())
     }
 
-    async fn insert_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowInsert,
-    ) -> Result<u64> {
+    async fn insert_row(&self, profile: &ConnectionProfile, req: RowInsert) -> Result<u64> {
         if req.values.is_empty() {
             return Err(DbError::InvalidInput(
                 "insert_row requires at least one column value".into(),
@@ -256,11 +246,7 @@ impl Driver for SqliteDriver {
         Ok(result.rows_affected())
     }
 
-    async fn delete_row(
-        &self,
-        profile: &ConnectionProfile,
-        req: RowDelete,
-    ) -> Result<u64> {
+    async fn delete_row(&self, profile: &ConnectionProfile, req: RowDelete) -> Result<u64> {
         if req.pk.is_empty() {
             return Err(DbError::InvalidInput(
                 "delete_row requires at least one pk column".into(),
@@ -310,8 +296,7 @@ impl Driver for SqliteDriver {
     ) -> Result<BatchResult> {
         let pool = self.pool_for(profile).await?;
         let mut tx = pool.begin().await.map_err(map_sqlx_error)?;
-        let mut results: Vec<BatchStatementResult> =
-            Vec::with_capacity(statements.len());
+        let mut results: Vec<BatchStatementResult> = Vec::with_capacity(statements.len());
         let mut failed_at: Option<usize> = None;
         for (index, sql) in statements.iter().enumerate() {
             if failed_at.is_some() {
@@ -344,10 +329,7 @@ impl Driver for SqliteDriver {
             Ok(BatchResult {
                 committed: false,
                 statements: results,
-                summary: format!(
-                    "rolled back: statement #{} failed",
-                    failed_at.unwrap() + 1
-                ),
+                summary: format!("rolled back: statement #{} failed", failed_at.unwrap() + 1),
             })
         } else {
             tx.commit().await.map_err(map_sqlx_error)?;
@@ -400,7 +382,11 @@ fn push_sqlite_value(q: &mut QueryBuilder<'_, Sqlite>, v: &Value) {
 /// connection from inside the async-trait method (or from a helper fn)
 /// trips rustc #102211 ("implementation of `Executor` is not general
 /// enough").
-async fn run_script(pool: SqlitePool, statements: Vec<String>, limit: usize) -> Result<QueryResult> {
+async fn run_script(
+    pool: SqlitePool,
+    statements: Vec<String>,
+    limit: usize,
+) -> Result<QueryResult> {
     let mut conn = pool.acquire().await.map_err(map_sqlx_error)?;
 
     let mut last: Option<QueryResult> = None;

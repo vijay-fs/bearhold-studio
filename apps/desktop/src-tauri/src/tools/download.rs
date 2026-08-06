@@ -164,7 +164,7 @@ async fn download_streamed(
         downloaded += chunk.len() as u64;
         buf.extend_from_slice(&chunk);
         // Emit at ~1% granularity so we don't drown the frontend in
-        // ProgressEvent notifications for a 55 MB mongodump download.
+        // ProgressEvent notifications for a large tool download.
         if downloaded - last_emit > total / 100 {
             sink.emit(ToolProgress {
                 bundle_key: bundle_key.to_string(),

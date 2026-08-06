@@ -15,8 +15,8 @@ use dbstudio_core::{
     server_info::{ServerFlags, ServerInfo},
     ssh_tunnel::{self, BastionAuth, SshTunnelConfig, Tunnel},
     AuthMethod, BatchResult, BatchStatementOutcome, BatchStatementResult, CellUpdate,
-    ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, Result,
-    ResultColumn, RowDelete, RowInsert, Schema, SshAuth, TlsMode, Value,
+    ConnectionProfile, DbError, Driver, QueryRequest, QueryResult, Result, ResultColumn, RowDelete,
+    RowInsert, Schema, SshAuth, TlsMode, Value,
 };
 use sqlx::{
     postgres::{PgPool, PgPoolOptions, Postgres},

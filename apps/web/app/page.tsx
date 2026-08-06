@@ -80,26 +80,12 @@ const ENGINE_STYLE: Partial<
     dot: 'bg-emerald-500',
     label: 'text-emerald-700 dark:text-emerald-300',
   },
-  mongodb: {
-    accent: 'bg-green-500/10 text-green-700 dark:text-green-300 ring-green-500/30',
-    stripe: 'from-green-400/60 to-green-500/10',
-    dot: 'bg-green-500',
-    label: 'text-green-700 dark:text-green-300',
-  },
-  redis: {
-    accent: 'bg-rose-500/10 text-rose-700 dark:text-rose-300 ring-rose-500/30',
-    stripe: 'from-rose-400/60 to-rose-500/10',
-    dot: 'bg-rose-500',
-    label: 'text-rose-700 dark:text-rose-300',
-  },
 };
 
 const ENGINE_ROUTE: Partial<Record<DatabaseEngine, string>> = {
   postgres: 'sql',
   mysql: 'sql',
   sqlite: 'sql',
-  mongodb: 'mongo',
-  redis: 'redis',
 };
 
 function styleFor(engine: DatabaseEngine) {

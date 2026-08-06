@@ -13,9 +13,7 @@ pub mod secrets;
 pub mod server_info;
 pub mod ssh_tunnel;
 
-pub use connection::{
-    AuthMethod, ConnectionProfile, DatabaseEngine, SshAuth, SshTunnel, TlsMode,
-};
+pub use connection::{AuthMethod, ConnectionProfile, DatabaseEngine, SshAuth, SshTunnel, TlsMode};
 pub use driver::{BatchResult, BatchStatementOutcome, BatchStatementResult, Driver};
 pub use error::{DbError, Result};
 pub use query::{CellUpdate, QueryRequest, QueryResult, ResultColumn, RowDelete, RowInsert, Value};

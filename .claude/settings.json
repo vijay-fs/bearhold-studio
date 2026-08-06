@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git push *)",
+      "Bash(git rm *)",
+      "Bash(git commit -m 'chore: untrack local .claude/settings.json *)"
+    ]
+  }
+}

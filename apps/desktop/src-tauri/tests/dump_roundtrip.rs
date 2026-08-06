@@ -11,13 +11,13 @@
 use std::sync::Arc;
 
 use dbstudio_core::{AuthMethod, ConnectionProfile, DatabaseEngine, Driver, QueryRequest, TlsMode};
+use dbstudio_desktop_lib::dump::detect;
 use dbstudio_desktop_lib::dump::export::{
     run_export, ExportContext, ExportFormat, ExportOptions, ExportProgressSink, ExportRegistry,
 };
 use dbstudio_desktop_lib::dump::import::{
     run_import, ImportContext, ImportOptions, ImportProgressSink, ImportRegistry,
 };
-use dbstudio_desktop_lib::dump::detect;
 use uuid::Uuid;
 
 struct NullSink;
@@ -169,7 +169,10 @@ async fn pg_round_trip(
 
     // Format sniffing must identify our own artifact.
     let detected = detect::probe(&exported).expect("probe").format;
-    assert_eq!(detected, expect_format, "detect::probe misidentified the dump");
+    assert_eq!(
+        detected, expect_format,
+        "detect::probe misidentified the dump"
+    );
 
     // Import into a fresh database.
     let admin = pg_profile("shop");
@@ -201,11 +204,7 @@ async fn pg_round_trip(
 
     let n = pg_scalar_i64(&dst, "SELECT COUNT(*) FROM customers").await;
     assert_eq!(n, 4, "row count after restore");
-    let neg = pg_scalar_i64(
-        &dst,
-        "SELECT COUNT(*) FROM customers WHERE balance < 0",
-    )
-    .await;
+    let neg = pg_scalar_i64(&dst, "SELECT COUNT(*) FROM customers WHERE balance < 0").await;
     assert_eq!(neg, 1, "negative balance survived round-trip");
 
     pg_exec(&admin, &format!("DROP DATABASE IF EXISTS {exp_db}")).await;
@@ -215,13 +214,25 @@ async fn pg_round_trip(
 #[tokio::test]
 #[ignore = "needs docker pg16 + pg_dump/psql on PATH"]
 async fn pg_plain_export_import_round_trip() {
-    pg_round_trip(ExportFormat::PgPlain, "dump.sql", detect::DumpFormat::PgPlain, "plain").await;
+    pg_round_trip(
+        ExportFormat::PgPlain,
+        "dump.sql",
+        detect::DumpFormat::PgPlain,
+        "plain",
+    )
+    .await;
 }
 
 #[tokio::test]
 #[ignore = "needs docker pg16 + pg_dump/pg_restore on PATH"]
 async fn pg_custom_export_import_round_trip() {
-    pg_round_trip(ExportFormat::PgCustom, "dump.pgdump", detect::DumpFormat::PgCustom, "custom").await;
+    pg_round_trip(
+        ExportFormat::PgCustom,
+        "dump.pgdump",
+        detect::DumpFormat::PgCustom,
+        "custom",
+    )
+    .await;
 }
 
 #[tokio::test]

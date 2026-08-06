@@ -53,15 +53,8 @@ export default function ConnectionsPage() {
         ) : (
           <ul className="grid gap-3 sm:grid-cols-2">
             {profiles.map((p) => {
-              // Land in the engine-appropriate workspace, same
-              // dispatch as the sidebar default click. /schema is
-              // SQL-only; Mongo/Redis go to their own browsers.
-              const landing =
-                p.engine === 'mongodb'
-                  ? '/mongo'
-                  : p.engine === 'redis'
-                    ? '/redis'
-                    : '/sql';
+              // All supported engines have a SQL workspace.
+              const landing = '/sql';
               return (
               <li key={p.id}>
                 <Link

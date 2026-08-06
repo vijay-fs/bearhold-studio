@@ -150,7 +150,10 @@ pub async fn discover_fingerprint(host: &str, port: u16) -> Result<String> {
 /// host-key-verified, and authenticated; then returns immediately with a
 /// `Tunnel` handle. The accept loop runs as a background task.
 pub async fn open(config: SshTunnelConfig) -> Result<Tunnel> {
-    let expected = config.expected_fingerprint.clone().ok_or(DbError::HostKeyMissing)?;
+    let expected = config
+        .expected_fingerprint
+        .clone()
+        .ok_or(DbError::HostKeyMissing)?;
     let (verifier, captured) = HostKeyVerifier::new(Some(expected.clone()));
 
     let cfg = Arc::new(client::Config::default());

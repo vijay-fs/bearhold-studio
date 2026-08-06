@@ -1,4 +1,4 @@
-// Where do we find pg_dump / mysqldump / mongodump on this machine?
+// Where do we find pg_dump / mysqldump / sqlite3 on this machine?
 //
 // Lookup order:
 //   1. If the tool ships *inside the installer* (Tauri resources under

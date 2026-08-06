@@ -10,9 +10,6 @@ pub enum DatabaseEngine {
     #[serde(rename = "mysql")]
     MySql,
     Sqlite,
-    #[serde(rename = "mongodb")]
-    MongoDb,
-    Redis,
     Cassandra,
     Neo4j,
     #[serde(rename = "couchdb")]
@@ -63,8 +60,13 @@ pub enum AuthMethod {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SshAuth {
-    Password { password_ref: String },
-    Key { key_ref: String, passphrase_ref: Option<String> },
+    Password {
+        password_ref: String,
+    },
+    Key {
+        key_ref: String,
+        passphrase_ref: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -103,8 +105,6 @@ impl ConnectionProfile {
         let (default_port, default_db) = match engine {
             DatabaseEngine::Postgres => (5432, "postgres"),
             DatabaseEngine::MySql => (3306, ""),
-            DatabaseEngine::MongoDb => (27017, "admin"),
-            DatabaseEngine::Redis => (6379, "0"),
             DatabaseEngine::Cassandra => (9042, ""),
             DatabaseEngine::Neo4j => (7687, "neo4j"),
             DatabaseEngine::CouchDb => (5984, ""),

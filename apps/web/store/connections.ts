@@ -91,14 +91,7 @@ export function newProfile(engine: DatabaseEngine = 'postgres'): ConnectionProfi
       file_path: '',
     };
   }
-  const defaultPort =
-    engine === 'mysql'
-      ? 3306
-      : engine === 'mongodb'
-        ? 27017
-        : engine === 'redis'
-          ? 6379
-          : 5432;
+  const defaultPort = engine === 'mysql' ? 3306 : 5432;
   return {
     id: crypto.randomUUID(),
     name: 'New connection',

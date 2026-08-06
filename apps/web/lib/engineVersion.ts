@@ -9,8 +9,8 @@
 // The frontend gets `major` / `minor` from a new `server_info` command
 // the Rust side queries at pool init (SHOW server_version_num for PG,
 // SELECT VERSION() for MySQL, SELECT sqlite_version() for SQLite).
-// When we don't know the version (Mongo, Redis, or connection just
-// added and not yet tested), `capabilities()` falls back to the
+// When we don't know the version (e.g. a connection just added and
+// not yet tested), `capabilities()` falls back to the
 // conservative subset that works everywhere in the engine's supported
 // range — never emits syntax the oldest supported version rejects.
 
